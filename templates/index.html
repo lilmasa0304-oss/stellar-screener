@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="STELLAR SCREENER — JPX400 日本株スイングトレード自動スクリーナー。BUY SIGNAL検出・MACD分析・LINE自動通知">
+    <title>STELLAR SCREENER — JPX400 自動スキャン</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Orbitron:wght@400;600;800;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+        :root {
+            --bg:           #060913;
+            --card-bg:      rgba(13, 20, 38, 0.70);
+            --card-border:  rgba(0, 210, 255, 0.10);
+            --neon-green:   #00ff88;
+            --neon-pink:    #ff007f;
+            --neon-blue:    #00d2ff;
+            --neon-yellow:  #ffe600;
+            --neon-orange:  #ff6b00;
+            --neon-gold:    #ffd700;
+            --text:         #f1f5f9;
+            --muted:        #64748b;
+        }
+
+        body {
+            background: var(--bg);
+            background-image:
+                linear-gradient(rgba(6,9,19,.95), rgba(6,9,19,.98)),
+                linear-gradient(rgba(0,210,255,.025) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0,210,255,.025) 1px, transparent 1px);
+            background-size: 100%, 28px 28px, 28px 28px;
+            color: var(--text);
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            padding: 16px;
+        }
+
+        .app { width: 100%; max-width: 520px; display: flex; flex-direction: column; gap: 18px; padding-bottom: 60px; }
+
+        /* ── HEADER ── */
+        header {
+            background: var(--card-bg); border: 1px solid var(--card-border);
+            border-radius: 12px; padding: 14px 16px;
+            backdrop-filter: blur(12px);
+            display: flex; justify-content: space-between; align-items: center;
+            position: relative; overflow: hidden;
+            box-shadow: 0 4px 24px rgba(0,0,0,.4);
+        }
+        header::before {
+            content:''; position: absolute; top:0; left:0; width:100%; height:2px;
+            background: linear-gradient(90deg, transparent, var(--neon-blue), var(--neon-green), transparent);
+        }
+        .h-title h1 {
+            font-family:'Orbitron',sans-serif; font-size:1.05rem; font-weight:900;
+            letter-spacing:2px;
+            background: linear-gradient(135deg, #fff 30%, var(--neon-blue));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .h-title p { font-family:'Share Tech Mono',monospace; font-size:.62rem; color:var(--neon-blue); letter-spacing:1px; margin-top:2px; }
+        .h-right { display:flex; flex-direction:column; align-items:flex-end; gap:5px; }
+
+        .line-pill {
+            display:flex; align-items:center; gap:7px;
+            background: rgba(0,255,136,.05); border:1px solid rgba(0,255,136,.2);
+            padding:5px 12px; border-radius:30px;
+            font-family:'Share Tech Mono',monospace; font-size:.68rem; color:var(--neon-green);
+        }
+        .line-pill.off { background:rgba(255,0,127,.05); border-color:rgba(255,0,127,.2); color:var(--neon-pink); }
+        .dot { width:6px; height:6px; border-radius:50%; background:var(--neon-green); animation:pulse-g 1.5s infinite; }
+        .off .dot { background:var(--neon-pink); animation:pulse-p 1.5s infinite; }
+        .next-scan { font-family:'Share Tech Mono',monospace; font-size:.6rem; color:var(--muted); text-align:right; }
+
+        @keyframes pulse-g { 0%{transform:scale(.95);box-shadow:0 0 0 0 rgba(0,255,136,.7)} 70%{transform:scale(1.1);box-shadow:0 0 0 6px rgba(0,255,136,0)} 100%{transform:scale(.95);box-shadow:0 0 0 0 rgba(0,255,136,0)} }
+        @keyframes pulse-p { 0%{transform:scale(.95);box-shadow:0 0 0 0 rgba(255,0,127,.7)} 70%{transform:scale(1.1);box-shadow:0 0 0 6px rgba(255,0,127,0)} 100%{transform:scale(.95);box-shadow:0 0 0 0 rgba(255,0,127,0)} }
+
+        /* ── GLASS CARD ── */
+        .card {
+            background: var(--card-bg); border:1px solid var(--card-border);
+            border-radius:12px; padding:18px 18px 20px;
+            backdrop-filter:blur(12px); box-shadow:0 8px 32px rgba(0,0,0,.4);
+        }
+        .sec-head {
+            display:flex; justify-content:space-between; align-items:center;
+            border-left:3px solid var(--neon-blue); padding-left:10px; margin-bottom:16px;
+        }
+        .sec-head h2 { font-family:'Orbitron',sans-serif; font-size:.85rem; font-weight:700; letter-spacing:1px; }
+
+        /* ── LOADER ── */
+        .loader { display:flex; justify-content:center; align-items:center; padding:28px 0; color:var(--muted); font-size:.82rem; gap:10px; }
+        .spin { width:18px; height:18px; border:2px solid rgba(0,210,255,.15); border-top-color:var(--neon-blue); border-radius:50%; animation:spin .8s linear infinite; }
+        @keyframes spin { to { transform:rotate(360deg); } }
+
+        /* ── JPX400 SCAN PANEL ── */
+        .scan-panel {
+            background:rgba(0,255,136,.03); border:1px solid rgba(0,255,136,.12);
+            border-radius:10px; padding:14px 16px; margin-bottom:16px;
+        }
+        .scan-title { font-family:'Orbitron',sans-serif; font-size:.78rem; font-weight:700; color:var(--neon-green); letter-spacing:1px; margin-bottom:10px; }
+        .scan-meta { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+        .scan-stat { font-family:'Share Tech Mono',monospace; font-size:.7rem; color:var(--muted); }
+        .scan-stat strong { color:var(--neon-yellow); }
+
+        /* Progress bar */
+        .progress-wrap { background:rgba(255,255,255,.06); border-radius:4px; height:6px; margin-bottom:8px; overflow:hidden; }
+        .progress-bar  { height:100%; background:linear-gradient(90deg,var(--neon-blue),var(--neon-green)); border-radius:4px; transition:width .5s ease; width:0%; }
+
+        .btn-jpx400 {
+            width:100%; border:none; border-radius:8px; padding:12px;
+            font-size:.78rem; font-weight:800; text-transform:uppercase; letter-spacing:1.5px;
+            cursor:pointer; transition:.25s;
+            background:linear-gradient(135deg, rgba(0,255,136,.15), rgba(0,210,255,.15));
+            border:1px solid rgba(0,255,136,.4); color:var(--neon-green);
+            display:flex; justify-content:center; align-items:center; gap:8px;
+        }
+        .btn-jpx400:hover { background:linear-gradient(135deg, rgba(0,255,136,.25), rgba(0,210,255,.25)); box-shadow:0 0 20px rgba(0,255,136,.2); }
+        .btn-jpx400:disabled { opacity:.5; cursor:not-allowed; }
+        .btn-jpx400.running { border-color:var(--neon-yellow); color:var(--neon-yellow); animation:running-pulse 1.5s infinite; }
+        @keyframes running-pulse { 0%,100%{box-shadow:0 0 0 0 rgba(255,230,0,.3)} 50%{box-shadow:0 0 0 8px rgba(255,230,0,0)} }
+
+        /* ── BUY SIGNAL RESULTS ── */
+        .buy-results { display:flex; flex-direction:column; gap:10px; margin-top:12px; }
+        .buy-card {
+            background:rgba(0,255,136,.04); border:1px solid rgba(0,255,136,.25);
+            border-radius:10px; padding:13px 14px;
+            box-shadow: 0 0 20px rgba(0,255,136,.08);
+            animation: buy-glow 2.5s infinite;
+        }
+        @keyframes buy-glow { 0%,100%{box-shadow:0 0 8px rgba(0,255,136,.08)} 50%{box-shadow:0 0 24px rgba(0,255,136,.22)} }
+        .buy-card-top { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px; }
+        .buy-card-meta .ticker { font-family:'Orbitron',sans-serif; font-weight:700; font-size:.88rem; color:var(--neon-green); }
+        .buy-card-meta .nm    { font-size:.65rem; color:var(--muted); margin-top:2px; }
+        .buy-badge {
+            font-family:'Share Tech Mono',monospace; font-size:.65rem; font-weight:900;
+            padding:4px 10px; border-radius:4px;
+            background:rgba(0,255,136,.12); color:var(--neon-green); border:1px solid var(--neon-green);
+            box-shadow:0 0 12px rgba(0,255,136,.4); letter-spacing:1px;
+            animation:gp 1.2s infinite;
+        }
+        @keyframes gp { 0%,100%{box-shadow:0 0 4px rgba(0,255,136,.2)} 50%{box-shadow:0 0 16px rgba(0,255,136,.6)} }
+
+        .buy-price { font-family:'Share Tech Mono',monospace; font-size:1rem; font-weight:bold; color:var(--text); margin-bottom:6px; }
+        .buy-price .chg-up { color:var(--neon-green); font-size:.75rem; }
+        .buy-price .chg-dn { color:var(--neon-pink); font-size:.75rem; }
+
+        /* 3条件チェックリスト */
+        .conditions { display:flex; flex-direction:column; gap:4px; }
+        .cond-row { display:flex; align-items:center; gap:8px; font-size:.68rem; }
+        .cond-ok  { color:var(--neon-green); font-size:.8rem; }
+        .cond-ng  { color:var(--muted); font-size:.8rem; }
+        .cond-label { color:var(--muted); }
+        .cond-val { font-family:'Share Tech Mono',monospace; color:var(--text); margin-left:auto; font-size:.67rem; }
+        .cond-gc  { color:var(--neon-green); }
+        .cond-pre { color:var(--neon-yellow); }
+
+        /* ── WATCHLIST ── */
+        .wl { display:flex; flex-direction:column; gap:12px; }
+        .sc {
+            background:rgba(14,21,42,.45); border:1px solid rgba(255,255,255,.04);
+            border-radius:10px; padding:13px 14px;
+            transition: border-color .2s, box-shadow .2s;
+        }
+        .sc.prime-entry { border-color:rgba(0,255,136,.35)!important; box-shadow:0 0 16px rgba(0,255,136,.12), inset 0 0 20px rgba(0,255,136,.04); }
+        .sc.buy-signal-card { border-color:rgba(0,255,136,.5)!important; box-shadow:0 0 24px rgba(0,255,136,.2), inset 0 0 30px rgba(0,255,136,.06)!important; animation:buy-glow 2s infinite; }
+        .sc-top { display:flex; justify-content:space-between; align-items:center; }
+        .sc-meta .ticker { font-family:'Orbitron',sans-serif; font-weight:700; font-size:.92rem; }
+        .sc-meta .nm { font-size:.65rem; color:var(--muted); max-width:140px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
+
+        .sc-price { display:flex; flex-direction:column; align-items:flex-end; }
+        .sc-price .price { font-family:'Share Tech Mono',monospace; font-size:1.05rem; font-weight:bold; }
+        .chg { font-family:'Share Tech Mono',monospace; font-size:.72rem; margin-top:1px; }
+        .chg.up { color:var(--neon-green); } .chg.dn { color:var(--neon-pink); }
+
+        /* Sparkline */
+        .spark { width:80px; height:24px; }
+        .sp { fill:none; stroke-width:1.8; stroke-linecap:round; }
+        .sp.up { stroke:var(--neon-green); } .sp.dn { stroke:var(--neon-pink); }
+
+        /* Metrics row */
+        .sc-metrics {
+            display:flex; flex-wrap:wrap; gap:5px 10px;
+            border-top:1px dashed rgba(255,255,255,.06);
+            padding-top:9px; margin-top:8px;
+        }
+        .metric { display:flex; align-items:center; gap:4px; font-family:'Share Tech Mono',monospace; font-size:.67rem; }
+        .metric .mk { color:var(--muted); font-size:.62rem; }
+        .metric .mv { font-weight:700; }
+        .mv.rsi-low   { color:var(--neon-green); text-shadow:0 0 6px rgba(0,255,136,.4); }
+        .mv.rsi-swing { color:var(--neon-gold);  text-shadow:0 0 6px rgba(255,215,0,.5); }
+        .mv.rsi-high  { color:var(--neon-pink);  text-shadow:0 0 6px rgba(255,0,127,.4); }
+        .mv.rsi-neutral { color:var(--neon-yellow); }
+        .mv.dev-up   { color:var(--neon-green); }
+        .mv.dev-dn   { color:var(--neon-pink);  }
+        .mv.dev-neutral { color:var(--muted); }
+        .mv.trend-up { color:var(--neon-green); }
+        .mv.trend-dn { color:var(--neon-pink);  }
+        .mv.bb-touch { color:var(--neon-orange); text-shadow:0 0 6px rgba(255,107,0,.5); }
+        .mv.macd-gc  { color:var(--neon-green); }
+        .mv.macd-pre { color:var(--neon-yellow); }
+        .mv.macd-neg { color:var(--neon-pink); }
+
+        /* Badges */
+        .sc-bottom { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
+        .badge { font-family:'Share Tech Mono',monospace; font-size:.62rem; font-weight:700; padding:3px 8px; border-radius:4px; }
+        .badge.neutral { background:rgba(255,255,255,.04); color:var(--muted); border:1px solid rgba(255,255,255,.08); }
+        .badge.buy { background:rgba(0,255,136,.08); color:var(--neon-green); border:1px solid var(--neon-green); animation:gp 2s infinite; }
+        .badge.sell { background:rgba(255,0,127,.08); color:var(--neon-pink); border:1px solid var(--neon-pink); animation:gpp 2s infinite; }
+        .badge.prime { background:rgba(0,255,136,.12); color:var(--neon-green); border:1px solid var(--neon-green); box-shadow:0 0 12px rgba(0,255,136,.3); animation:gp 1.2s infinite; }
+        .badge.buy-signal {
+            background:rgba(0,255,136,.15); color:#00ff88; border:1.5px solid #00ff88;
+            box-shadow:0 0 16px rgba(0,255,136,.5); animation:gp 1s infinite;
+            letter-spacing:.5px; padding:4px 10px;
+        }
+        @keyframes gpp { 0%,100%{box-shadow:0 0 3px rgba(255,0,127,.15)} 50%{box-shadow:0 0 12px rgba(255,0,127,.45)} }
+
+        /* ── FORM ELEMENTS ── */
+        .fg { margin-bottom:20px; }
+        .fg:last-child { margin-bottom:0; }
+        .lr { display:flex; justify-content:space-between; align-items:center; margin-bottom:7px; }
+        .flabel { font-size:.78rem; font-weight:600; letter-spacing:.4px; text-transform:uppercase; }
+        .fval { font-family:'Share Tech Mono',monospace; font-size:.95rem; font-weight:bold; padding:2px 8px; border-radius:4px; }
+        .fval.os { color:var(--neon-green); background:rgba(0,255,136,.06); border:1px solid rgba(0,255,136,.18); }
+        .fval.ob { color:var(--neon-pink);  background:rgba(255,0,127,.06); border:1px solid rgba(255,0,127,.18); }
+        .fval.sw { color:var(--neon-gold);  background:rgba(255,215,0,.06); border:1px solid rgba(255,215,0,.18); }
+
+        input[type="range"] { -webkit-appearance:none; width:100%; height:5px; background:rgba(255,255,255,.06); border-radius:3px; outline:none; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px; border-radius:50%; cursor:pointer; }
+        .sl-os::-webkit-slider-thumb  { background:var(--neon-green); box-shadow:0 0 10px var(--neon-green); }
+        .sl-ob::-webkit-slider-thumb  { background:var(--neon-pink);  box-shadow:0 0 10px var(--neon-pink);  }
+        .sl-sw::-webkit-slider-thumb  { background:var(--neon-gold);  box-shadow:0 0 10px var(--neon-gold);  }
+
+        /* Toggle */
+        .toggle-row { display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:rgba(0,0,0,.25); border:1px solid rgba(255,255,255,.06); border-radius:8px; margin-bottom:8px; }
+        .toggle-row:last-child { margin-bottom:0; }
+        .toggle-label { font-size:.75rem; font-weight:600; line-height:1.4; color:var(--text); max-width:240px; }
+        .toggle-label small { display:block; font-size:.64rem; color:var(--muted); font-weight:400; margin-top:1px; }
+        .switch { position:relative; display:inline-block; width:42px; height:24px; flex-shrink:0; }
+        .switch input { opacity:0; width:0; height:0; }
+        .slider-sw { position:absolute; cursor:pointer; inset:0; background:#1e293b; border-radius:24px; border:1px solid rgba(255,255,255,.08); transition:.25s; }
+        .slider-sw::before { content:''; position:absolute; width:18px; height:18px; left:2px; top:2px; background:#64748b; border-radius:50%; transition:.25s; }
+        input:checked + .slider-sw { background:rgba(0,255,136,.18); border-color:var(--neon-green); box-shadow:0 0 8px rgba(0,255,136,.25); }
+        input:checked + .slider-sw::before { transform:translateX(18px); background:var(--neon-green); box-shadow:0 0 6px var(--neon-green); }
+
+        /* Tags */
+        .tag-wrap { background:rgba(4,7,16,.55); border:1px solid rgba(255,255,255,.08); border-radius:8px; padding:8px 12px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+        .tag-wrap:focus-within { border-color:var(--neon-blue); box-shadow:0 0 10px rgba(0,210,255,.12); }
+        .tag { background:rgba(0,210,255,.07); border:1px solid rgba(0,210,255,.28); color:var(--neon-blue); padding:3px 8px; border-radius:4px; font-size:.7rem; font-weight:700; font-family:'Share Tech Mono',monospace; display:flex; align-items:center; gap:5px; }
+        .tag button { background:none; border:none; color:var(--neon-pink); cursor:pointer; font-size:.78rem; font-weight:bold; line-height:1; padding:0 1px; }
+        .tag-input { background:transparent; border:none; outline:none; color:#fff; font-size:.82rem; flex:1; min-width:80px; font-family:'Share Tech Mono',monospace; text-transform:uppercase; }
+
+        /* Select */
+        .sel { width:100%; background:rgba(4,7,16,.55); border:1px solid rgba(255,255,255,.08); border-radius:8px; padding:10px 14px; color:#fff; outline:none; font-size:.82rem; }
+        .sel:focus { border-color:var(--neon-blue); }
+
+        /* Buttons */
+        .btn-group { display:flex; flex-direction:column; gap:10px; margin-top:8px; }
+        .btn { width:100%; border:none; border-radius:10px; padding:15px; font-size:.82rem; font-weight:800; text-transform:uppercase; letter-spacing:1.5px; cursor:pointer; transition:.25s; display:flex; justify-content:center; align-items:center; gap:8px; }
+        .btn-save { background:linear-gradient(135deg, var(--neon-blue), var(--neon-green)); color:#060913; box-shadow:0 4px 20px rgba(0,255,136,.18); position:relative; overflow:hidden; }
+        .btn-save:active { transform:scale(.98); }
+        .btn-save::after { content:''; position:absolute; top:0; left:-100%; width:50%; height:100%; background:linear-gradient(90deg, transparent, rgba(255,255,255,.3), transparent); transform:skewX(-20deg); animation:shine 4s infinite; }
+        @keyframes shine { 0%{left:-100%} 20%{left:150%} 100%{left:150%} }
+        .btn-run { background:transparent; border:1px solid var(--neon-blue); color:var(--neon-blue); }
+        .btn-run:active { background:rgba(0,210,255,.05); transform:scale(.98); }
+
+        /* ── HISTORY SECTION ── */
+        .history-list { display:flex; flex-direction:column; gap:8px; }
+        .hist-item {
+            background:rgba(0,210,255,.03); border:1px solid rgba(0,210,255,.1);
+            border-radius:8px; padding:10px 12px;
+            display:flex; justify-content:space-between; align-items:center;
+        }
+        .hist-meta { font-family:'Share Tech Mono',monospace; font-size:.68rem; color:var(--muted); }
+        .hist-meta strong { color:var(--text); }
+        .hist-badge { font-family:'Share Tech Mono',monospace; font-size:.62rem; font-weight:700; padding:3px 8px; border-radius:4px; }
+        .hist-badge.has-signal { background:rgba(0,255,136,.1); color:var(--neon-green); border:1px solid rgba(0,255,136,.3); }
+        .hist-badge.no-signal  { background:rgba(255,255,255,.04); color:var(--muted); border:1px solid rgba(255,255,255,.08); }
+
+        /* ── TERMINAL MODAL ── */
+        .t-modal { position:fixed; inset:0; background:rgba(6,9,19,.97); z-index:1000; display:flex; justify-content:center; align-items:center; padding:20px; opacity:0; pointer-events:none; transition:.25s; }
+        .t-modal.open { opacity:1; pointer-events:auto; }
+        .t-win { background:#07101e; border:1px solid var(--neon-blue); border-radius:12px; width:100%; max-width:440px; height:80vh; display:flex; flex-direction:column; box-shadow:0 0 30px rgba(0,210,255,.2); transform:scale(.92); transition:.28s cubic-bezier(.34,1.56,.64,1); }
+        .t-modal.open .t-win { transform:scale(1); }
+        .t-hd { background:rgba(0,210,255,.05); border-bottom:1px solid rgba(0,210,255,.12); padding:11px 14px; display:flex; justify-content:space-between; align-items:center; border-radius:11px 11px 0 0; }
+        .t-hd-title { font-family:'Share Tech Mono',monospace; font-size:.78rem; color:var(--neon-blue); letter-spacing:1px; }
+        .t-close { background:none; border:none; color:var(--neon-pink); font-size:1.1rem; cursor:pointer; }
+        .t-body { flex:1; padding:14px; font-family:'Share Tech Mono',monospace; font-size:.75rem; color:#cbd5e1; overflow-y:auto; display:flex; flex-direction:column; gap:8px; background:#040810; }
+        .tl { line-height:1.45; white-space:pre-wrap; }
+        .tl.g { color:var(--neon-green); } .tl.p { color:var(--neon-pink); } .tl.b { color:var(--neon-blue); } .tl.y { color:var(--neon-yellow); }
+
+        /* ── TOAST ── */
+        .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%) translateY(100px); background:rgba(0,210,255,.08); border:1px solid var(--neon-blue); color:#fff; padding:11px 22px; border-radius:30px; font-size:.78rem; font-weight:700; z-index:10000; backdrop-filter:blur(10px); box-shadow:0 8px 25px rgba(0,210,255,.2); transition:all .28s cubic-bezier(.18,.89,.32,1.28); text-transform:uppercase; letter-spacing:1px; white-space:nowrap; }
+        .toast.show { transform:translateX(-50%) translateY(0); }
+
+        .divider { height:1px; background:rgba(255,255,255,.05); margin:14px 0; }
+        .sub-head { font-size:.7rem; color:var(--neon-blue); font-weight:700; letter-spacing:1px; text-transform:uppercase; margin-bottom:10px; }
+        .empty-state { text-align:center; padding:20px 0; font-size:.8rem; color:var(--muted); }
+    </style>
+</head>
+<body>
+<div class="app">
+
+    <!-- ── HEADER ── -->
+    <header>
+        <div class="h-title">
+            <h1>STELLAR SCREENER</h1>
+            <p>JPX400 スイングトレード監視システム V3.0</p>
+        </div>
+        <div class="h-right">
+            <div id="linePill" class="line-pill off">
+                <div class="dot"></div>
+                <span id="lineText">LINE未接続</span>
+            </div>
+            <div id="nextScan" class="next-scan">次回自動スキャン: ---</div>
+        </div>
+    </header>
+
+    <!-- ── JPX400 AUTO SCAN ── -->
+    <section class="card">
+        <div class="sec-head"><h2>📡 JPX400 自動スキャン</h2></div>
+
+        <div class="scan-panel">
+            <div class="scan-title">🔍 JPX400 全銘柄スキャン</div>
+            <div class="scan-meta">
+                <span class="scan-stat">対象: <strong id="jpxTotal">--</strong> 銘柄</span>
+                <span class="scan-stat">処理済: <strong id="jpxProcessed">0</strong></span>
+                <span class="scan-stat" id="jpxBuyCount" style="color:var(--neon-green);display:none">🚀 <strong id="jpxBuyCnt">0</strong> BUY</span>
+            </div>
+            <div class="progress-wrap"><div id="jpxProgress" class="progress-bar"></div></div>
+            <div id="jpxStatusText" style="font-family:'Share Tech Mono',monospace;font-size:.65rem;color:var(--muted);margin-bottom:10px;">待機中 — ボタンを押して JPX400 全銘柄スキャンを開始します</div>
+            <button id="btnJpx400" class="btn-jpx400">⚡ JPX400 スキャン開始</button>
+        </div>
+
+        <!-- BUY SIGNAL 結果 -->
+        <div id="buyResultsWrap" style="display:none">
+            <div class="sub-head">🚀 BUY SIGNAL 検出銘柄</div>
+            <div id="buyResults" class="buy-results"></div>
+        </div>
+    </section>
+
+    <!-- ── WATCHLIST ── -->
+    <section class="card">
+        <div class="sec-head">
+            <h2>監視銘柄リスト</h2>
+            <button id="btnRefresh" style="background:none;border:1px solid rgba(0,210,255,.3);color:var(--neon-blue);border-radius:6px;padding:4px 10px;font-size:.65rem;cursor:pointer;font-family:'Share Tech Mono',monospace;">更新</button>
+        </div>
+        <div id="loader" class="loader"><div class="spin"></div><span>リアルタイムデータ取得中…</span></div>
+        <div id="wl" class="wl" style="display:none"></div>
+    </section>
+
+    <!-- ── SCAN HISTORY ── -->
+    <section class="card">
+        <div class="sec-head"><h2>📋 スキャン履歴</h2></div>
+        <div id="historyLoader" class="loader" style="padding:14px 0;"><div class="spin"></div><span>読込中…</span></div>
+        <div id="historyList" class="history-list" style="display:none"></div>
+    </section>
+
+    <!-- ── CONTROL PANEL ── -->
+    <section class="card">
+        <div class="sec-head"><h2>制御コンソール</h2></div>
+
+        <!-- RSI sliders -->
+        <div class="fg">
+            <div class="lr">
+                <span class="flabel">RSI 売られすぎ検出レベル</span>
+                <span id="osVal" class="fval os">30</span>
+            </div>
+            <input type="range" id="rsOS" class="sl-os" min="15" max="40" value="30">
+        </div>
+
+        <div class="fg">
+            <div class="lr">
+                <span class="flabel">RSI 買われすぎ検出レベル</span>
+                <span id="obVal" class="fval ob">70</span>
+            </div>
+            <input type="range" id="rsOB" class="sl-ob" min="60" max="85" value="70">
+        </div>
+
+        <div class="divider"></div>
+        <div class="sub-head">🌟 スイング BUY SIGNAL 条件（3条件 AND）</div>
+
+        <div class="fg">
+            <div class="lr">
+                <span class="flabel">RSI 反発帯 下限（BUY SIGNAL）</span>
+                <span id="swMinVal" class="fval sw">35</span>
+            </div>
+            <input type="range" id="swMin" class="sl-sw" min="25" max="45" value="35">
+        </div>
+
+        <div class="fg">
+            <div class="lr">
+                <span class="flabel">RSI 反発帯 上限（BUY SIGNAL）</span>
+                <span id="swMaxVal" class="fval sw">45</span>
+            </div>
+            <input type="range" id="swMax" class="sl-sw" min="35" max="60" value="45">
+        </div>
+
+        <div class="divider"></div>
+        <div class="sub-head">⚡ スイング複合条件フィルター</div>
+
+        <div class="toggle-row">
+            <div class="toggle-label">
+                25日線上向き を必須とする
+                <small>ON: 上昇トレンド中の押し目のみを BUY SIGNAL 対象に</small>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="toggleMA25" checked>
+                <span class="slider-sw"></span>
+            </label>
+        </div>
+
+        <div class="toggle-row" style="margin-top:8px">
+            <div class="toggle-label">
+                MACD ゴールデンクロス を必須とする
+                <small>ON: GC または GC直前（ヒスト収束中）も必須条件に追加</small>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="toggleMACD" checked>
+                <span class="slider-sw"></span>
+            </label>
+        </div>
+
+        <div class="toggle-row" style="margin-top:8px">
+            <div class="toggle-label">
+                BB −2σ タッチ を必須とする
+                <small>ON: ボリンジャーバンド下限タッチも必須条件に追加</small>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="toggleBB">
+                <span class="slider-sw"></span>
+            </label>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- Tickers -->
+        <div class="fg">
+            <div class="lr"><span class="flabel">監視対象コード（ウォッチリスト）</span></div>
+            <div id="tagWrap" class="tag-wrap">
+                <input type="text" id="tagInput" class="tag-input" placeholder="コード追加（例: 8306.T）">
+            </div>
+        </div>
+
+        <!-- Interval -->
+        <div class="fg">
+            <div class="lr"><span class="flabel">API ウェイト（遅延秒数）</span></div>
+            <select id="selInterval" class="sel">
+                <option value="1.0">1.0秒ディレイ（標準）</option>
+                <option value="2.0">2.0秒ディレイ（安全）</option>
+                <option value="5.0">5.0秒ディレイ（高負荷用）</option>
+            </select>
+        </div>
+
+        <!-- Buttons -->
+        <div class="btn-group">
+            <button id="btnSave" class="btn btn-save">設定保存 ＆ ボット更新</button>
+            <button id="btnRun"  class="btn btn-run">即時スクリーニング（ウォッチリスト）</button>
+        </div>
+    </section>
+</div>
+
+<!-- ── TERMINAL MODAL ── -->
+<div id="tModal" class="t-modal">
+    <div class="t-win">
+        <div class="t-hd">
+            <span class="t-hd-title">ボットスキャン端末 v3.0</span>
+            <button id="tClose" class="t-close">&times;</button>
+        </div>
+        <div id="tBody" class="t-body"></div>
+    </div>
+</div>
+
+<div id="toast" class="toast">完了</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────
+let tickers = [], rsiCfg={}, crossCfg={}, dcCfg={}, maCfg={}, bbCfg={}, compCfg={}, swingCfg={}, settings={};
+let jpxPollTimer = null;
+
+// ── DOM ────────────────────────────────────────────────────────────────
+const rsOS       = document.getElementById('rsOS');
+const rsOB       = document.getElementById('rsOB');
+const swMin      = document.getElementById('swMin');
+const swMax      = document.getElementById('swMax');
+const osVal      = document.getElementById('osVal');
+const obVal      = document.getElementById('obVal');
+const swMinVal   = document.getElementById('swMinVal');
+const swMaxVal   = document.getElementById('swMaxVal');
+const toggleMA25 = document.getElementById('toggleMA25');
+const toggleMACD = document.getElementById('toggleMACD');
+const toggleBB   = document.getElementById('toggleBB');
+const tagWrap    = document.getElementById('tagWrap');
+const tagInput   = document.getElementById('tagInput');
+const selInterval= document.getElementById('selInterval');
+const btnSave    = document.getElementById('btnSave');
+const btnRun     = document.getElementById('btnRun');
+const btnJpx400  = document.getElementById('btnJpx400');
+const btnRefresh = document.getElementById('btnRefresh');
+const tModal     = document.getElementById('tModal');
+const tBody      = document.getElementById('tBody');
+const tClose     = document.getElementById('tClose');
+const loader     = document.getElementById('loader');
+const wl         = document.getElementById('wl');
+const linePill   = document.getElementById('linePill');
+const lineText   = document.getElementById('lineText');
+const nextScan   = document.getElementById('nextScan');
+const toast      = document.getElementById('toast');
+const jpxProgress= document.getElementById('jpxProgress');
+const jpxTotal   = document.getElementById('jpxTotal');
+const jpxProcessed=document.getElementById('jpxProcessed');
+const jpxBuyCount= document.getElementById('jpxBuyCount');
+const jpxBuyCnt  = document.getElementById('jpxBuyCnt');
+const jpxStatusText=document.getElementById('jpxStatusText');
+const buyResultsWrap=document.getElementById('buyResultsWrap');
+const buyResults = document.getElementById('buyResults');
+const historyList= document.getElementById('historyList');
+const historyLoader=document.getElementById('historyLoader');
+
+// ── Sliders ────────────────────────────────────────────────────────────
+rsOS.addEventListener('input', e => osVal.textContent = e.target.value);
+rsOB.addEventListener('input', e => obVal.textContent = e.target.value);
+swMin.addEventListener('input', e => swMinVal.textContent = e.target.value);
+swMax.addEventListener('input', e => swMaxVal.textContent = e.target.value);
+
+// ── Tickers tag ────────────────────────────────────────────────────────
+tagWrap.addEventListener('click', () => tagInput.focus());
+tagInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ',') {
+        e.preventDefault();
+        const v = tagInput.value.trim().toUpperCase();
+        if (v && !tickers.includes(v)) { tickers.push(v); renderTags(); }
+        tagInput.value = '';
+    }
+});
+function renderTags() {
+    tagWrap.querySelectorAll('.tag').forEach(t => t.remove());
+    tickers.forEach(t => {
+        const el = document.createElement('div'); el.className = 'tag';
+        el.innerHTML = `<span>${t}</span><button onclick="removeTicker('${t}')">&times;</button>`;
+        tagWrap.insertBefore(el, tagInput);
+    });
+}
+window.removeTicker = t => { tickers = tickers.filter(x => x !== t); renderTags(); };
+
+// ── Toast ──────────────────────────────────────────────────────────────
+function showToast(msg, color = '') {
+    toast.textContent = msg;
+    toast.style.borderColor = color || '';
+    toast.style.color       = color || '';
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 3000);
+}
+
+// ── Config Load ────────────────────────────────────────────────────────
+async function loadConfig() {
+    try {
+        const d = await fetch('/api/config').then(r => r.json());
+        tickers  = d.tickers || [];
+        rsiCfg   = d.strategies?.rsi          || {};
+        crossCfg = d.strategies?.crossover    || {};
+        dcCfg    = d.strategies?.daily_change || {};
+        maCfg    = d.strategies?.ma_trend     || {};
+        bbCfg    = d.strategies?.bollinger    || {};
+        compCfg  = d.strategies?.composite_entry || {};
+        swingCfg = d.swing_signal || {};
+        settings = d.settings || {};
+
+        rsOS.value = rsiCfg.oversold_threshold  || 30; osVal.textContent = rsOS.value;
+        rsOB.value = rsiCfg.overbought_threshold || 70; obVal.textContent = rsOB.value;
+        swMin.value = swingCfg.rsi_min || 35; swMinVal.textContent = swMin.value;
+        swMax.value = swingCfg.rsi_max || 45; swMaxVal.textContent = swMax.value;
+        toggleMA25.checked = maCfg.require_ma25_uptrend    ?? true;
+        toggleMACD.checked = swingCfg.require_macd_cross   ?? true;
+        toggleBB.checked   = bbCfg.require_lower_band_touch ?? false;
+        selInterval.value  = (settings.delay_seconds || 1.0).toFixed(1);
+        renderTags();
+
+        if (d.line_connected) {
+            linePill.className = 'line-pill'; lineText.textContent = 'LINE 連携中';
+        } else {
+            linePill.className = 'line-pill off'; lineText.textContent = 'LINE 未設定';
+        }
+        if (d.next_scan_time) {
+            const dt = new Date(d.next_scan_time);
+            const fmt = dt.toLocaleString('ja-JP', { timeZone:'Asia/Tokyo', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' });
+            nextScan.textContent = `次回自動スキャン: ${fmt} JST`;
+        }
+    } catch(e) { showToast('設定の読み込みに失敗'); }
+}
+
+// ── Stocks Load ────────────────────────────────────────────────────────
+async function loadStocks() {
+    loader.style.display = 'flex'; wl.style.display = 'none'; wl.innerHTML = '';
+    try {
+        const stocks = await fetch('/api/stocks').then(r => r.json());
+        if (!Array.isArray(stocks) || stocks.length === 0) {
+            wl.innerHTML = `<div class="empty-state">監視中の銘柄がありません</div>`;
+        } else {
+            stocks.forEach(s => wl.appendChild(buildCard(s)));
+        }
+        loader.style.display = 'none'; wl.style.display = 'flex';
+    } catch(e) {
+        loader.innerHTML = `<span style="color:var(--neon-pink)">ライブデータの取得に失敗しました</span>`;
+    }
+}
+btnRefresh.addEventListener('click', loadStocks);
+
+function buildCard(s) {
+    const isUp = s.change_percent >= 0;
+    const cc   = isUp ? 'up' : 'dn';
+    const sign = isUp ? '+' : '';
+    const priceStr = `${s.current_price?.toLocaleString('ja-JP',{maximumFractionDigits:1}) || '--'}円`;
+
+    // RSI color
+    let rsiClass = 'rsi-neutral';
+    if (s.rsi !== null && s.rsi !== undefined) {
+        const rsiMin = parseFloat(swMin.value) || 35;
+        const rsiMax = parseFloat(swMax.value) || 45;
+        if (s.rsi <= 30)               rsiClass = 'rsi-low';
+        else if (s.rsi >= rsiMin && s.rsi <= rsiMax) rsiClass = 'rsi-swing';
+        else if (s.rsi >= 70)          rsiClass = 'rsi-high';
+    }
+
+    // MA25 deviation
+    let devClass = 'dev-neutral', devStr = '--';
+    if (s.ma25_deviation_pct !== null && s.ma25_deviation_pct !== undefined) {
+        devStr   = `${s.ma25_deviation_pct >= 0 ? '+' : ''}${s.ma25_deviation_pct.toFixed(1)}%`;
+        devClass = s.ma25_deviation_pct > 0 ? 'dev-up' : 'dev-dn';
+    }
+
+    // MA25 trend
+    const trendIcon  = s.ma25_uptrend ? '↗' : '↘';
+    const trendClass = s.ma25_uptrend ? 'trend-up' : 'trend-dn';
+
+    // MACD
+    let macdHtml = '';
+    if (s.macd !== null && s.macd !== undefined) {
+        let macdClass = 'macd-neg', macdLabel = 'MACD';
+        if (s.macd_crossover)     { macdClass = 'macd-gc';  macdLabel = 'MACD GC'; }
+        else if (s.macd_pre_crossover) { macdClass = 'macd-pre'; macdLabel = 'MACD GC前'; }
+        macdHtml = `<span class="metric"><span class="mk">${macdLabel}</span><span class="mv ${macdClass}">${s.macd_hist !== null ? (s.macd_hist >= 0 ? '+' : '') + s.macd_hist?.toFixed(2) : '--'}</span></span>`;
+    }
+
+    // BB touch
+    const bbTouchHtml = s.bb_lower_touch
+        ? `<span class="metric"><span class="mk">BB</span><span class="mv bb-touch">−2σ触</span></span>` : '';
+
+    // Badges
+    let badges = '';
+    if (s.buy_signal) {
+        badges += `<span class="badge buy-signal">🚀 BUY SIGNAL</span>`;
+    }
+    if (s.is_prime_entry) {
+        badges += `<span class="badge prime">⭐ 絶好エントリー</span>`;
+    }
+    if (s.triggered && s.signals.length > 0 && !s.buy_signal) {
+        s.signals.forEach(sig => {
+            if (sig.includes('⭐') || sig.includes('BUY')) return;
+            const isBuy  = sig.includes('売られすぎ') || sig.includes('ゴールデンクロス') || sig.includes('押し目') || sig.includes('GC');
+            const isSell = sig.includes('買われすぎ') || sig.includes('デッドクロス') || sig.includes('下落');
+            const cls    = isBuy ? 'buy' : isSell ? 'sell' : 'neutral';
+            const label  = isBuy ? '買いシグナル' : isSell ? '売りシグナル' : '情報';
+            badges += `<span class="badge ${cls}">${label}</span>`;
+        });
+    }
+    if (!badges) badges = `<span class="badge neutral">監視中</span>`;
+
+    const card = document.createElement('div');
+    const cardClass = s.buy_signal ? 'sc buy-signal-card' : (s.is_prime_entry ? 'sc prime-entry' : 'sc');
+    card.className = cardClass;
+    card.innerHTML = `
+        <div class="sc-top">
+            <div class="sc-meta">
+                <span class="ticker">${s.ticker}</span>
+                <span class="nm">${s.name}</span>
+            </div>
+            <svg class="spark" viewBox="0 0 80 24">${sparkPath(s.sparkline, isUp)}</svg>
+            <div class="sc-price">
+                <span class="price">${priceStr}</span>
+                <span class="chg ${cc}">${sign}${s.change_percent.toFixed(2)}%</span>
+            </div>
+        </div>
+        <div class="sc-metrics">
+            <span class="metric"><span class="mk">RSI</span><span class="mv ${rsiClass}">${s.rsi ?? '--'}</span></span>
+            <span class="metric"><span class="mk">25日乖離</span><span class="mv ${devClass}">${devStr}</span></span>
+            <span class="metric"><span class="mk">25日線</span><span class="mv ${trendClass}">${trendIcon} ${s.ma25 ? s.ma25.toLocaleString('ja-JP') : '--'}円</span></span>
+            ${s.ma75 ? `<span class="metric"><span class="mk">75日線</span><span class="mv dev-neutral">${s.ma75.toLocaleString('ja-JP')}円</span></span>` : ''}
+            ${macdHtml}
+            ${bbTouchHtml}
+        </div>
+        <div class="sc-bottom">${badges}</div>
+    `;
+    return card;
+}
+
+function sparkPath(prices, isUp) {
+    if (!prices || prices.length < 2) return '';
+    const W=80, H=24, P=2;
+    const mn = Math.min(...prices), mx = Math.max(...prices), range = mx - mn || 1;
+    const pts = prices.map((v,i) => {
+        const x = (i / (prices.length-1)) * W;
+        const y = H - P - ((v - mn) / range) * (H - 2*P);
+        return `${x},${y}`;
+    });
+    return `<path class="sp ${isUp?'up':'dn'}" d="M ${pts.join(' L ')}"/>`;
+}
+
+// ── Save Config ────────────────────────────────────────────────────────
+btnSave.addEventListener('click', async () => {
+    btnSave.disabled = true; btnSave.style.opacity = '.6';
+    const payload = {
+        tickers,
+        rsi: {
+            enabled:              rsiCfg.enabled ?? true,
+            period:               rsiCfg.period  ?? 14,
+            oversold_threshold:   parseFloat(rsOS.value),
+            overbought_threshold: parseFloat(rsOB.value),
+        },
+        crossover: {
+            enabled:      crossCfg.enabled      ?? true,
+            short_period: crossCfg.short_period  ?? 5,
+            long_period:  crossCfg.long_period   ?? 25,
+        },
+        daily_change: {
+            enabled:           dcCfg.enabled           ?? true,
+            threshold_percent: dcCfg.threshold_percent ?? 3.0,
+        },
+        ma_trend: {
+            enabled:              maCfg.enabled       ?? true,
+            ma5_period:           maCfg.ma5_period     ?? 5,
+            ma25_period:          maCfg.ma25_period    ?? 25,
+            ma75_period:          maCfg.ma75_period    ?? 75,
+            require_ma25_uptrend: toggleMA25.checked,
+        },
+        bollinger: {
+            enabled:                  bbCfg.enabled  ?? true,
+            period:                   bbCfg.period   ?? 20,
+            std_dev:                  bbCfg.std_dev  ?? 2.0,
+            require_lower_band_touch: toggleBB.checked,
+        },
+        composite_entry: { enabled: compCfg.enabled ?? true },
+        swing_signal: {
+            rsi_min:              parseFloat(swMin.value),
+            rsi_max:              parseFloat(swMax.value),
+            require_ma25_uptrend: toggleMA25.checked,
+            require_macd_cross:   toggleMACD.checked,
+        },
+    };
+    try {
+        const r = await fetch('/api/config', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload),
+        });
+        if (r.ok) { showToast('設定を保存・適用しました', 'var(--neon-green)'); loadStocks(); }
+        else { const e = await r.json(); showToast(`エラー: ${e.detail}`); }
+    } catch(e) { showToast('設定の保存に失敗しました'); }
+    finally { btnSave.disabled = false; btnSave.style.opacity = '1'; }
+});
+
+// ── Watchlist Run ──────────────────────────────────────────────────────
+btnRun.addEventListener('click', async () => {
+    tModal.classList.add('open');
+    tBody.innerHTML = `
+        <div class="tl b">&gt; ウォッチリストスクリーニング開始…</div>
+        <div class="tl">&gt; Yahoo Finance API に接続中…</div>`;
+    try {
+        const res = await fetch('/api/run', { method: 'POST' });
+        const r   = await res.json();
+        if (r.status === 'success') {
+            tBody.innerHTML += `<div class="tl g">&gt; スキャン完了 — 対象: ${tickers.join(', ')}</div>`;
+            if (r.buy_signal_count > 0) {
+                tBody.innerHTML += `<div class="tl g">&gt; 🚀 BUY SIGNAL: ${r.buy_signal_count} 件検出！</div>`;
+            }
+            if (r.matched_count === 0) {
+                tBody.innerHTML += `<div class="tl">&gt; シグナルなし。LINE通知をスキップしました。</div>`;
+            } else {
+                r.matched_results.forEach(m => {
+                    const bs = m.buy_signal ? ' 🚀 BUY SIGNAL' : (m.is_prime_entry ? ' ⭐絶好エントリー' : '');
+                    tBody.innerHTML += `<div class="tl ${m.buy_signal ? 'g' : ''}">`
+                        + `  * [${m.ticker}] ${m.name}${bs}\n`
+                        + `    ${m.current_price?.toLocaleString('ja-JP')}円 | RSI: ${m.rsi ?? '--'}`
+                        + ` | MACD: ${m.macd_crossover ? '✅GC' : m.macd_pre_crossover ? '⚡GC前' : '--'}\n`
+                        + `    ${m.signals.join(' / ')}</div>`;
+                });
+                tBody.innerHTML += r.sent_line
+                    ? `<div class="tl g">&gt; LINE に BUY SIGNAL 通知を送信しました！</div>`
+                    : `<div class="tl p">&gt; LINE 通知を送信しませんでした（資格情報を確認してください）</div>`;
+            }
+            tBody.innerHTML += `<div class="tl b">&gt; 処理完了 [終了コード: 0]</div>`;
+        } else {
+            tBody.innerHTML += `<div class="tl p">&gt; エラー: ${r.detail}</div>`;
+        }
+    } catch(e) {
+        tBody.innerHTML += `<div class="tl p">&gt; 接続エラーが発生しました。</div>`;
+    }
+});
+tClose.addEventListener('click', () => { tModal.classList.remove('open'); loadStocks(); });
+
+// ── JPX400 Scan ────────────────────────────────────────────────────────
+btnJpx400.addEventListener('click', async () => {
+    try {
+        const r = await fetch('/api/jpx400/scan', { method: 'POST' });
+        if (r.status === 409) {
+            const e = await r.json(); showToast(e.detail); return;
+        }
+        const d = await r.json();
+        jpxTotal.textContent = d.total_tickers || '--';
+        setBtnRunning(true);
+        jpxStatusText.textContent = 'スキャン実行中…';
+        startJpxPolling();
+    } catch(e) { showToast('スキャン開始に失敗しました'); }
+});
+
+function setBtnRunning(running) {
+    btnJpx400.disabled = running;
+    btnJpx400.className = running ? 'btn-jpx400 running' : 'btn-jpx400';
+    btnJpx400.textContent = running ? '⚡ スキャン実行中…' : '⚡ JPX400 スキャン開始';
+}
+
+function startJpxPolling() {
+    if (jpxPollTimer) clearInterval(jpxPollTimer);
+    jpxPollTimer = setInterval(pollJpxStatus, 3000);
+}
+
+async function pollJpxStatus() {
+    try {
+        const d = await fetch('/api/jpx400/status').then(r => r.json());
+        const pct = d.total > 0 ? (d.processed / d.total) * 100 : 0;
+        jpxProgress.style.width = pct + '%';
+        jpxProcessed.textContent = d.processed || 0;
+        jpxTotal.textContent     = d.total      || '--';
+
+        if (d.buy_count > 0) {
+            jpxBuyCount.style.display = 'inline';
+            jpxBuyCnt.textContent = d.buy_count;
+        }
+
+        if (d.status === 'running') {
+            jpxStatusText.textContent = `スキャン実行中… ${d.processed}/${d.total} 処理済み`;
+        } else if (d.status === 'completed') {
+            clearInterval(jpxPollTimer); jpxPollTimer = null;
+            setBtnRunning(false);
+            jpxProgress.style.width = '100%';
+            jpxStatusText.textContent = `✅ スキャン完了 — ${d.buy_count} 件の BUY SIGNAL を検出`;
+            showToast(`JPX400 スキャン完了: ${d.buy_count} BUY SIGNAL`, 'var(--neon-green)');
+
+            // 結果表示
+            if (d.buy_signals && d.buy_signals.length > 0) {
+                buyResults.innerHTML = '';
+                d.buy_signals.forEach(s => buyResults.appendChild(buildBuyCard(s)));
+                buyResultsWrap.style.display = 'block';
+            }
+            loadHistory();
+        } else if (d.status === 'failed') {
+            clearInterval(jpxPollTimer); jpxPollTimer = null;
+            setBtnRunning(false);
+            jpxStatusText.textContent = `❌ スキャン失敗: ${d.error || '不明なエラー'}`;
+            showToast('スキャンでエラーが発生しました');
+        } else if (d.status === 'idle') {
+            clearInterval(jpxPollTimer); jpxPollTimer = null;
+        }
+    } catch(e) {}
+}
+
+function buildBuyCard(s) {
+    const priceStr = `${s.current_price?.toLocaleString('ja-JP',{maximumFractionDigits:1}) || '--'}円`;
+    const chg      = s.change_percent || 0;
+    const chgClass = chg >= 0 ? 'chg-up' : 'chg-dn';
+    const chgStr   = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
+    const macdLabel = s.macd_crossover ? '✅ ゴールデンクロス' : '⚡ GC直前（収束中）';
+    const rsiStr   = s.rsi !== null ? s.rsi.toFixed(1) : '--';
+    const ma25Str  = s.ma25 ? s.ma25.toLocaleString('ja-JP') + '円' : '--';
+    const macdHStr = s.macd_hist !== null ? (s.macd_hist >= 0 ? '+' : '') + s.macd_hist?.toFixed(3) : '--';
+
+    const card = document.createElement('div');
+    card.className = 'buy-card';
+    card.innerHTML = `
+        <div class="buy-card-top">
+            <div class="buy-card-meta">
+                <div class="ticker">${s.ticker}</div>
+                <div class="nm">${s.name}</div>
+            </div>
+            <span class="buy-badge">🚀 BUY SIGNAL</span>
+        </div>
+        <div class="buy-price">${priceStr} <span class="${chgClass}">${chgStr}</span></div>
+        <div class="conditions">
+            <div class="cond-row">
+                <span class="${s.ma25_uptrend ? 'cond-ok' : 'cond-ng'}">${s.ma25_uptrend ? '✅' : '☐'}</span>
+                <span class="cond-label">条件①: 25日MA 上向き</span>
+                <span class="cond-val">${ma25Str}</span>
+            </div>
+            <div class="cond-row">
+                <span class="cond-ok">✅</span>
+                <span class="cond-label">条件②: RSI(14) 反発帯</span>
+                <span class="cond-val" style="color:var(--neon-gold)">${rsiStr}</span>
+            </div>
+            <div class="cond-row">
+                <span class="cond-ok">✅</span>
+                <span class="cond-label">条件③: ${macdLabel}</span>
+                <span class="cond-val ${s.macd_crossover ? 'cond-gc' : 'cond-pre'}">${macdHStr}</span>
+            </div>
+        </div>
+    `;
+    return card;
+}
+
+// ── History ────────────────────────────────────────────────────────────
+async function loadHistory() {
+    historyLoader.style.display = 'flex';
+    historyList.style.display   = 'none';
+    try {
+        const sessions = await fetch('/api/history/sessions?limit=10').then(r => r.json());
+        historyList.innerHTML = '';
+        if (!sessions.length) {
+            historyList.innerHTML = `<div class="empty-state">スキャン履歴がありません</div>`;
+        } else {
+            sessions.forEach(s => {
+                const dt = new Date(s.started_at + 'Z');
+                const fmt = dt.toLocaleString('ja-JP', { timeZone:'Asia/Tokyo', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' });
+                const typeLabel = s.scan_type === 'scheduled' ? '⏰ 定時' : (s.scan_type === 'jpx400' ? '📡 JPX400' : '👆 手動');
+                const hasBuy = s.buy_signal_count > 0;
+                const item = document.createElement('div');
+                item.className = 'hist-item';
+                item.innerHTML = `
+                    <div class="hist-meta">
+                        <strong>${fmt} JST</strong>　${typeLabel}<br>
+                        処理: ${s.processed || 0}/${s.total_tickers || 0}銘柄
+                        ${s.sent_line ? '　📩 LINE送信済' : ''}
+                    </div>
+                    <span class="hist-badge ${hasBuy ? 'has-signal' : 'no-signal'}">
+                        ${hasBuy ? `🚀 ${s.buy_signal_count} BUY` : 'シグナルなし'}
+                    </span>
+                `;
+                historyList.appendChild(item);
+            });
+        }
+        historyLoader.style.display = 'none';
+        historyList.style.display   = 'flex';
+    } catch(e) {
+        historyLoader.innerHTML = `<span style="color:var(--muted)">履歴の読み込みに失敗</span>`;
+    }
+}
+
+// ── Init ───────────────────────────────────────────────────────────────
+loadConfig();
+loadStocks();
+loadHistory();
+
+// 既存のスキャンが実行中なら自動的にポーリング再開
+(async () => {
+    try {
+        const d = await fetch('/api/jpx400/status').then(r => r.json());
+        if (d.status === 'running') {
+            jpxTotal.textContent = d.total || '--';
+            setBtnRunning(true);
+            jpxStatusText.textContent = 'スキャン再接続中…';
+            startJpxPolling();
+        }
+    } catch(e) {}
+})();
+</script>
+</body>
+</html>

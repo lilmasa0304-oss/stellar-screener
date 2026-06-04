@@ -1,0 +1,25 @@
+# SQLite DB（GitHubにはプッシュしない）
+data/
+
+# 仮想環境
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 環境変数（機密情報）
+.env
+
+# エディタ・OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python ビルド成果物
+*.egg-info/
+dist/
+build/
