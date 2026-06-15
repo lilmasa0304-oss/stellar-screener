@@ -1,966 +1,730 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="STELLAR SCREENER — JPX400 日本株スイングトレード自動スクリーナー。BUY SIGNAL検出・MACD分析・LINE自動通知">
-    <title>STELLAR SCREENER — JPX400 自動スキャン</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Orbitron:wght@400;600;800;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <title>STELLAR SCREENER V3.0 // 戦術ターミナル</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-
-        :root {
-            --bg:           #060913;
-            --card-bg:      rgba(13, 20, 38, 0.70);
-            --card-border:  rgba(0, 210, 255, 0.10);
-            --neon-green:   #00ff88;
-            --neon-pink:    #ff007f;
-            --neon-blue:    #00d2ff;
-            --neon-yellow:  #ffe600;
-            --neon-orange:  #ff6b00;
-            --neon-gold:    #ffd700;
-            --text:         #f1f5f9;
-            --muted:        #64748b;
-        }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=JetBrains+Mono:wght@500;700&display=swap');
 
         body {
-            background: var(--bg);
-            background-image:
-                linear-gradient(rgba(6,9,19,.95), rgba(6,9,19,.98)),
-                linear-gradient(rgba(0,210,255,.025) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(0,210,255,.025) 1px, transparent 1px);
-            background-size: 100%, 28px 28px, 28px 28px;
-            color: var(--text);
-            font-family: 'Inter', sans-serif;
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            padding: 16px;
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: #090d16;
+            color: #f1f5f9;
         }
 
-        .app { width: 100%; max-width: 520px; display: flex; flex-direction: column; gap: 18px; padding-bottom: 60px; }
-
-        /* ── HEADER ── */
-        header {
-            background: var(--card-bg); border: 1px solid var(--card-border);
-            border-radius: 12px; padding: 14px 16px;
-            backdrop-filter: blur(12px);
-            display: flex; justify-content: space-between; align-items: center;
-            position: relative; overflow: hidden;
-            box-shadow: 0 4px 24px rgba(0,0,0,.4);
+        .mono-font {
+            font-family: 'JetBrains Mono', monospace;
         }
-        header::before {
-            content:''; position: absolute; top:0; left:0; width:100%; height:2px;
-            background: linear-gradient(90deg, transparent, var(--neon-blue), var(--neon-green), transparent);
+
+        .neon-card {
+            background: #0f1626;
+            border: 1px solid #1e293b;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
         }
-        .h-title h1 {
-            font-family:'Orbitron',sans-serif; font-size:1.05rem; font-weight:900;
-            letter-spacing:2px;
-            background: linear-gradient(135deg, #fff 30%, var(--neon-blue));
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+
+        .risk-mode-active {
+            border-color: rgba(16, 185, 129, 0.5) !important;
+            background: linear-gradient(to bottom right, rgba(6, 78, 59, 0.2), transparent) !important;
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.1);
+            opacity: 1 !important;
         }
-        .h-title p { font-family:'Share Tech Mono',monospace; font-size:.62rem; color:var(--neon-blue); letter-spacing:1px; margin-top:2px; }
-        .h-right { display:flex; flex-direction:column; align-items:flex-end; gap:5px; }
 
-        .line-pill {
-            display:flex; align-items:center; gap:7px;
-            background: rgba(0,255,136,.05); border:1px solid rgba(0,255,136,.2);
-            padding:5px 12px; border-radius:30px;
-            font-family:'Share Tech Mono',monospace; font-size:.68rem; color:var(--neon-green);
+        .chat-scroll {
+            max-height: 420px;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: #334155 transparent;
         }
-        .line-pill.off { background:rgba(255,0,127,.05); border-color:rgba(255,0,127,.2); color:var(--neon-pink); }
-        .dot { width:6px; height:6px; border-radius:50%; background:var(--neon-green); animation:pulse-g 1.5s infinite; }
-        .off .dot { background:var(--neon-pink); animation:pulse-p 1.5s infinite; }
-        .next-scan { font-family:'Share Tech Mono',monospace; font-size:.6rem; color:var(--muted); text-align:right; }
 
-        @keyframes pulse-g { 0%{transform:scale(.95);box-shadow:0 0 0 0 rgba(0,255,136,.7)} 70%{transform:scale(1.1);box-shadow:0 0 0 6px rgba(0,255,136,0)} 100%{transform:scale(.95);box-shadow:0 0 0 0 rgba(0,255,136,0)} }
-        @keyframes pulse-p { 0%{transform:scale(.95);box-shadow:0 0 0 0 rgba(255,0,127,.7)} 70%{transform:scale(1.1);box-shadow:0 0 0 6px rgba(255,0,127,0)} 100%{transform:scale(.95);box-shadow:0 0 0 0 rgba(255,0,127,0)} }
-
-        /* ── GLASS CARD ── */
-        .card {
-            background: var(--card-bg); border:1px solid var(--card-border);
-            border-radius:12px; padding:18px 18px 20px;
-            backdrop-filter:blur(12px); box-shadow:0 8px 32px rgba(0,0,0,.4);
+        .typing-cursor::after {
+            content: '▋';
+            animation: blink 0.9s step-end infinite;
+            color: #34d399;
+            margin-left: 2px;
         }
-        .sec-head {
-            display:flex; justify-content:space-between; align-items:center;
-            border-left:3px solid var(--neon-blue); padding-left:10px; margin-bottom:16px;
+
+        @keyframes blink {
+            50% { opacity: 0; }
         }
-        .sec-head h2 { font-family:'Orbitron',sans-serif; font-size:.85rem; font-weight:700; letter-spacing:1px; }
 
-        /* ── LOADER ── */
-        .loader { display:flex; justify-content:center; align-items:center; padding:28px 0; color:var(--muted); font-size:.82rem; gap:10px; }
-        .spin { width:18px; height:18px; border:2px solid rgba(0,210,255,.15); border-top-color:var(--neon-blue); border-radius:50%; animation:spin .8s linear infinite; }
-        @keyframes spin { to { transform:rotate(360deg); } }
-
-        /* ── JPX400 SCAN PANEL ── */
-        .scan-panel {
-            background:rgba(0,255,136,.03); border:1px solid rgba(0,255,136,.12);
-            border-radius:10px; padding:14px 16px; margin-bottom:16px;
+        .watchlist-badge {
+            transition: all 0.2s ease;
         }
-        .scan-title { font-family:'Orbitron',sans-serif; font-size:.78rem; font-weight:700; color:var(--neon-green); letter-spacing:1px; margin-bottom:10px; }
-        .scan-meta { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
-        .scan-stat { font-family:'Share Tech Mono',monospace; font-size:.7rem; color:var(--muted); }
-        .scan-stat strong { color:var(--neon-yellow); }
 
-        /* Progress bar */
-        .progress-wrap { background:rgba(255,255,255,.06); border-radius:4px; height:6px; margin-bottom:8px; overflow:hidden; }
-        .progress-bar  { height:100%; background:linear-gradient(90deg,var(--neon-blue),var(--neon-green)); border-radius:4px; transition:width .5s ease; width:0%; }
-
-        .btn-jpx400 {
-            width:100%; border:none; border-radius:8px; padding:12px;
-            font-size:.78rem; font-weight:800; text-transform:uppercase; letter-spacing:1.5px;
-            cursor:pointer; transition:.25s;
-            background:linear-gradient(135deg, rgba(0,255,136,.15), rgba(0,210,255,.15));
-            border:1px solid rgba(0,255,136,.4); color:var(--neon-green);
-            display:flex; justify-content:center; align-items:center; gap:8px;
+        .watchlist-badge:hover {
+            border-color: rgba(34, 211, 238, 0.5);
+            box-shadow: 0 0 12px rgba(34, 211, 238, 0.08);
         }
-        .btn-jpx400:hover { background:linear-gradient(135deg, rgba(0,255,136,.25), rgba(0,210,255,.25)); box-shadow:0 0 20px rgba(0,255,136,.2); }
-        .btn-jpx400:disabled { opacity:.5; cursor:not-allowed; }
-        .btn-jpx400.running { border-color:var(--neon-yellow); color:var(--neon-yellow); animation:running-pulse 1.5s infinite; }
-        @keyframes running-pulse { 0%,100%{box-shadow:0 0 0 0 rgba(255,230,0,.3)} 50%{box-shadow:0 0 0 8px rgba(255,230,0,0)} }
 
-        /* ── BUY SIGNAL RESULTS ── */
-        .buy-results { display:flex; flex-direction:column; gap:10px; margin-top:12px; }
-        .buy-card {
-            background:rgba(0,255,136,.04); border:1px solid rgba(0,255,136,.25);
-            border-radius:10px; padding:13px 14px;
-            box-shadow: 0 0 20px rgba(0,255,136,.08);
-            animation: buy-glow 2.5s infinite;
+        .watchlist-remove {
+            transition: color 0.15s ease, transform 0.15s ease;
         }
-        @keyframes buy-glow { 0%,100%{box-shadow:0 0 8px rgba(0,255,136,.08)} 50%{box-shadow:0 0 24px rgba(0,255,136,.22)} }
-        .buy-card-top { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px; }
-        .buy-card-meta .ticker { font-family:'Orbitron',sans-serif; font-weight:700; font-size:.88rem; color:var(--neon-green); }
-        .buy-card-meta .nm    { font-size:.65rem; color:var(--muted); margin-top:2px; }
-        .buy-badge {
-            font-family:'Share Tech Mono',monospace; font-size:.65rem; font-weight:900;
-            padding:4px 10px; border-radius:4px;
-            background:rgba(0,255,136,.12); color:var(--neon-green); border:1px solid var(--neon-green);
-            box-shadow:0 0 12px rgba(0,255,136,.4); letter-spacing:1px;
-            animation:gp 1.2s infinite;
+
+        .watchlist-remove:hover {
+            color: #f472b6;
+            transform: scale(1.15);
         }
-        @keyframes gp { 0%,100%{box-shadow:0 0 4px rgba(0,255,136,.2)} 50%{box-shadow:0 0 16px rgba(0,255,136,.6)} }
-
-        .buy-price { font-family:'Share Tech Mono',monospace; font-size:1rem; font-weight:bold; color:var(--text); margin-bottom:6px; }
-        .buy-price .chg-up { color:var(--neon-green); font-size:.75rem; }
-        .buy-price .chg-dn { color:var(--neon-pink); font-size:.75rem; }
-
-        /* 3条件チェックリスト */
-        .conditions { display:flex; flex-direction:column; gap:4px; }
-        .cond-row { display:flex; align-items:center; gap:8px; font-size:.68rem; }
-        .cond-ok  { color:var(--neon-green); font-size:.8rem; }
-        .cond-ng  { color:var(--muted); font-size:.8rem; }
-        .cond-label { color:var(--muted); }
-        .cond-val { font-family:'Share Tech Mono',monospace; color:var(--text); margin-left:auto; font-size:.67rem; }
-        .cond-gc  { color:var(--neon-green); }
-        .cond-pre { color:var(--neon-yellow); }
-
-        /* ── WATCHLIST ── */
-        .wl { display:flex; flex-direction:column; gap:12px; }
-        .sc {
-            background:rgba(14,21,42,.45); border:1px solid rgba(255,255,255,.04);
-            border-radius:10px; padding:13px 14px;
-            transition: border-color .2s, box-shadow .2s;
-        }
-        .sc.prime-entry { border-color:rgba(0,255,136,.35)!important; box-shadow:0 0 16px rgba(0,255,136,.12), inset 0 0 20px rgba(0,255,136,.04); }
-        .sc.buy-signal-card { border-color:rgba(0,255,136,.5)!important; box-shadow:0 0 24px rgba(0,255,136,.2), inset 0 0 30px rgba(0,255,136,.06)!important; animation:buy-glow 2s infinite; }
-        .sc-top { display:flex; justify-content:space-between; align-items:center; }
-        .sc-meta .ticker { font-family:'Orbitron',sans-serif; font-weight:700; font-size:.92rem; }
-        .sc-meta .nm { font-size:.65rem; color:var(--muted); max-width:140px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
-
-        .sc-price { display:flex; flex-direction:column; align-items:flex-end; }
-        .sc-price .price { font-family:'Share Tech Mono',monospace; font-size:1.05rem; font-weight:bold; }
-        .chg { font-family:'Share Tech Mono',monospace; font-size:.72rem; margin-top:1px; }
-        .chg.up { color:var(--neon-green); } .chg.dn { color:var(--neon-pink); }
-
-        /* Sparkline */
-        .spark { width:80px; height:24px; }
-        .sp { fill:none; stroke-width:1.8; stroke-linecap:round; }
-        .sp.up { stroke:var(--neon-green); } .sp.dn { stroke:var(--neon-pink); }
-
-        /* Metrics row */
-        .sc-metrics {
-            display:flex; flex-wrap:wrap; gap:5px 10px;
-            border-top:1px dashed rgba(255,255,255,.06);
-            padding-top:9px; margin-top:8px;
-        }
-        .metric { display:flex; align-items:center; gap:4px; font-family:'Share Tech Mono',monospace; font-size:.67rem; }
-        .metric .mk { color:var(--muted); font-size:.62rem; }
-        .metric .mv { font-weight:700; }
-        .mv.rsi-low   { color:var(--neon-green); text-shadow:0 0 6px rgba(0,255,136,.4); }
-        .mv.rsi-swing { color:var(--neon-gold);  text-shadow:0 0 6px rgba(255,215,0,.5); }
-        .mv.rsi-high  { color:var(--neon-pink);  text-shadow:0 0 6px rgba(255,0,127,.4); }
-        .mv.rsi-neutral { color:var(--neon-yellow); }
-        .mv.dev-up   { color:var(--neon-green); }
-        .mv.dev-dn   { color:var(--neon-pink);  }
-        .mv.dev-neutral { color:var(--muted); }
-        .mv.trend-up { color:var(--neon-green); }
-        .mv.trend-dn { color:var(--neon-pink);  }
-        .mv.bb-touch { color:var(--neon-orange); text-shadow:0 0 6px rgba(255,107,0,.5); }
-        .mv.macd-gc  { color:var(--neon-green); }
-        .mv.macd-pre { color:var(--neon-yellow); }
-        .mv.macd-neg { color:var(--neon-pink); }
-
-        /* Badges */
-        .sc-bottom { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
-        .badge { font-family:'Share Tech Mono',monospace; font-size:.62rem; font-weight:700; padding:3px 8px; border-radius:4px; }
-        .badge.neutral { background:rgba(255,255,255,.04); color:var(--muted); border:1px solid rgba(255,255,255,.08); }
-        .badge.buy { background:rgba(0,255,136,.08); color:var(--neon-green); border:1px solid var(--neon-green); animation:gp 2s infinite; }
-        .badge.sell { background:rgba(255,0,127,.08); color:var(--neon-pink); border:1px solid var(--neon-pink); animation:gpp 2s infinite; }
-        .badge.prime { background:rgba(0,255,136,.12); color:var(--neon-green); border:1px solid var(--neon-green); box-shadow:0 0 12px rgba(0,255,136,.3); animation:gp 1.2s infinite; }
-        .badge.buy-signal {
-            background:rgba(0,255,136,.15); color:#00ff88; border:1.5px solid #00ff88;
-            box-shadow:0 0 16px rgba(0,255,136,.5); animation:gp 1s infinite;
-            letter-spacing:.5px; padding:4px 10px;
-        }
-        @keyframes gpp { 0%,100%{box-shadow:0 0 3px rgba(255,0,127,.15)} 50%{box-shadow:0 0 12px rgba(255,0,127,.45)} }
-
-        /* ── FORM ELEMENTS ── */
-        .fg { margin-bottom:20px; }
-        .fg:last-child { margin-bottom:0; }
-        .lr { display:flex; justify-content:space-between; align-items:center; margin-bottom:7px; }
-        .flabel { font-size:.78rem; font-weight:600; letter-spacing:.4px; text-transform:uppercase; }
-        .fval { font-family:'Share Tech Mono',monospace; font-size:.95rem; font-weight:bold; padding:2px 8px; border-radius:4px; }
-        .fval.os { color:var(--neon-green); background:rgba(0,255,136,.06); border:1px solid rgba(0,255,136,.18); }
-        .fval.ob { color:var(--neon-pink);  background:rgba(255,0,127,.06); border:1px solid rgba(255,0,127,.18); }
-        .fval.sw { color:var(--neon-gold);  background:rgba(255,215,0,.06); border:1px solid rgba(255,215,0,.18); }
-
-        input[type="range"] { -webkit-appearance:none; width:100%; height:5px; background:rgba(255,255,255,.06); border-radius:3px; outline:none; }
-        input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px; border-radius:50%; cursor:pointer; }
-        .sl-os::-webkit-slider-thumb  { background:var(--neon-green); box-shadow:0 0 10px var(--neon-green); }
-        .sl-ob::-webkit-slider-thumb  { background:var(--neon-pink);  box-shadow:0 0 10px var(--neon-pink);  }
-        .sl-sw::-webkit-slider-thumb  { background:var(--neon-gold);  box-shadow:0 0 10px var(--neon-gold);  }
-
-        /* Toggle */
-        .toggle-row { display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:rgba(0,0,0,.25); border:1px solid rgba(255,255,255,.06); border-radius:8px; margin-bottom:8px; }
-        .toggle-row:last-child { margin-bottom:0; }
-        .toggle-label { font-size:.75rem; font-weight:600; line-height:1.4; color:var(--text); max-width:240px; }
-        .toggle-label small { display:block; font-size:.64rem; color:var(--muted); font-weight:400; margin-top:1px; }
-        .switch { position:relative; display:inline-block; width:42px; height:24px; flex-shrink:0; }
-        .switch input { opacity:0; width:0; height:0; }
-        .slider-sw { position:absolute; cursor:pointer; inset:0; background:#1e293b; border-radius:24px; border:1px solid rgba(255,255,255,.08); transition:.25s; }
-        .slider-sw::before { content:''; position:absolute; width:18px; height:18px; left:2px; top:2px; background:#64748b; border-radius:50%; transition:.25s; }
-        input:checked + .slider-sw { background:rgba(0,255,136,.18); border-color:var(--neon-green); box-shadow:0 0 8px rgba(0,255,136,.25); }
-        input:checked + .slider-sw::before { transform:translateX(18px); background:var(--neon-green); box-shadow:0 0 6px var(--neon-green); }
-
-        /* Tags */
-        .tag-wrap { background:rgba(4,7,16,.55); border:1px solid rgba(255,255,255,.08); border-radius:8px; padding:8px 12px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
-        .tag-wrap:focus-within { border-color:var(--neon-blue); box-shadow:0 0 10px rgba(0,210,255,.12); }
-        .tag { background:rgba(0,210,255,.07); border:1px solid rgba(0,210,255,.28); color:var(--neon-blue); padding:3px 8px; border-radius:4px; font-size:.7rem; font-weight:700; font-family:'Share Tech Mono',monospace; display:flex; align-items:center; gap:5px; }
-        .tag button { background:none; border:none; color:var(--neon-pink); cursor:pointer; font-size:.78rem; font-weight:bold; line-height:1; padding:0 1px; }
-        .tag-input { background:transparent; border:none; outline:none; color:#fff; font-size:.82rem; flex:1; min-width:80px; font-family:'Share Tech Mono',monospace; text-transform:uppercase; }
-
-        /* Select */
-        .sel { width:100%; background:rgba(4,7,16,.55); border:1px solid rgba(255,255,255,.08); border-radius:8px; padding:10px 14px; color:#fff; outline:none; font-size:.82rem; }
-        .sel:focus { border-color:var(--neon-blue); }
-
-        /* Buttons */
-        .btn-group { display:flex; flex-direction:column; gap:10px; margin-top:8px; }
-        .btn { width:100%; border:none; border-radius:10px; padding:15px; font-size:.82rem; font-weight:800; text-transform:uppercase; letter-spacing:1.5px; cursor:pointer; transition:.25s; display:flex; justify-content:center; align-items:center; gap:8px; }
-        .btn-save { background:linear-gradient(135deg, var(--neon-blue), var(--neon-green)); color:#060913; box-shadow:0 4px 20px rgba(0,255,136,.18); position:relative; overflow:hidden; }
-        .btn-save:active { transform:scale(.98); }
-        .btn-save::after { content:''; position:absolute; top:0; left:-100%; width:50%; height:100%; background:linear-gradient(90deg, transparent, rgba(255,255,255,.3), transparent); transform:skewX(-20deg); animation:shine 4s infinite; }
-        @keyframes shine { 0%{left:-100%} 20%{left:150%} 100%{left:150%} }
-        .btn-run { background:transparent; border:1px solid var(--neon-blue); color:var(--neon-blue); }
-        .btn-run:active { background:rgba(0,210,255,.05); transform:scale(.98); }
-
-        /* ── HISTORY SECTION ── */
-        .history-list { display:flex; flex-direction:column; gap:8px; }
-        .hist-item {
-            background:rgba(0,210,255,.03); border:1px solid rgba(0,210,255,.1);
-            border-radius:8px; padding:10px 12px;
-            display:flex; justify-content:space-between; align-items:center;
-        }
-        .hist-meta { font-family:'Share Tech Mono',monospace; font-size:.68rem; color:var(--muted); }
-        .hist-meta strong { color:var(--text); }
-        .hist-badge { font-family:'Share Tech Mono',monospace; font-size:.62rem; font-weight:700; padding:3px 8px; border-radius:4px; }
-        .hist-badge.has-signal { background:rgba(0,255,136,.1); color:var(--neon-green); border:1px solid rgba(0,255,136,.3); }
-        .hist-badge.no-signal  { background:rgba(255,255,255,.04); color:var(--muted); border:1px solid rgba(255,255,255,.08); }
-
-        /* ── TERMINAL MODAL ── */
-        .t-modal { position:fixed; inset:0; background:rgba(6,9,19,.97); z-index:1000; display:flex; justify-content:center; align-items:center; padding:20px; opacity:0; pointer-events:none; transition:.25s; }
-        .t-modal.open { opacity:1; pointer-events:auto; }
-        .t-win { background:#07101e; border:1px solid var(--neon-blue); border-radius:12px; width:100%; max-width:440px; height:80vh; display:flex; flex-direction:column; box-shadow:0 0 30px rgba(0,210,255,.2); transform:scale(.92); transition:.28s cubic-bezier(.34,1.56,.64,1); }
-        .t-modal.open .t-win { transform:scale(1); }
-        .t-hd { background:rgba(0,210,255,.05); border-bottom:1px solid rgba(0,210,255,.12); padding:11px 14px; display:flex; justify-content:space-between; align-items:center; border-radius:11px 11px 0 0; }
-        .t-hd-title { font-family:'Share Tech Mono',monospace; font-size:.78rem; color:var(--neon-blue); letter-spacing:1px; }
-        .t-close { background:none; border:none; color:var(--neon-pink); font-size:1.1rem; cursor:pointer; }
-        .t-body { flex:1; padding:14px; font-family:'Share Tech Mono',monospace; font-size:.75rem; color:#cbd5e1; overflow-y:auto; display:flex; flex-direction:column; gap:8px; background:#040810; }
-        .tl { line-height:1.45; white-space:pre-wrap; }
-        .tl.g { color:var(--neon-green); } .tl.p { color:var(--neon-pink); } .tl.b { color:var(--neon-blue); } .tl.y { color:var(--neon-yellow); }
-
-        /* ── TOAST ── */
-        .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%) translateY(100px); background:rgba(0,210,255,.08); border:1px solid var(--neon-blue); color:#fff; padding:11px 22px; border-radius:30px; font-size:.78rem; font-weight:700; z-index:10000; backdrop-filter:blur(10px); box-shadow:0 8px 25px rgba(0,210,255,.2); transition:all .28s cubic-bezier(.18,.89,.32,1.28); text-transform:uppercase; letter-spacing:1px; white-space:nowrap; }
-        .toast.show { transform:translateX(-50%) translateY(0); }
-
-        .divider { height:1px; background:rgba(255,255,255,.05); margin:14px 0; }
-        .sub-head { font-size:.7rem; color:var(--neon-blue); font-weight:700; letter-spacing:1px; text-transform:uppercase; margin-bottom:10px; }
-        .empty-state { text-align:center; padding:20px 0; font-size:.8rem; color:var(--muted); }
     </style>
 </head>
-<body>
-<div class="app">
 
-    <!-- ── HEADER ── -->
-    <header>
-        <div class="h-title">
-            <h1>STELLAR SCREENER</h1>
-            <p>JPX400 スイングトレード監視システム V3.0</p>
-        </div>
-        <div class="h-right">
-            <div id="linePill" class="line-pill off">
-                <div class="dot"></div>
-                <span id="lineText">LINE未接続</span>
+<body class="p-4 md:p-6 min-h-screen selection:bg-emerald-500 selection:text-black">
+
+    <div class="max-w-5xl mx-auto space-y-6">
+
+        <div
+            class="neon-card rounded-2xl p-6 flex flex-col md:flex-row justify-between items-start md:items-center border-l-4 border-l-cyan-400 gap-4">
+            <div>
+                <h1
+                    class="text-2xl font-black tracking-wider mono-font text-transparent bg-clip-text bg-gradient-to-r from-slate-100 to-cyan-400 uppercase">
+                    STELLAR SCREENER
+                </h1>
+                <p class="text-xs text-cyan-400 font-semibold tracking-wide mt-1">
+                    プレミアム流動性アルファ // 全市場・高流動性マトリクス監査システム
+                </p>
             </div>
-            <div id="nextScan" class="next-scan">次回自動スキャン: ---</div>
-        </div>
-    </header>
-
-    <!-- ── JPX400 AUTO SCAN ── -->
-    <section class="card">
-        <div class="sec-head"><h2>📡 JPX400 自動スキャン</h2></div>
-
-        <div class="scan-panel">
-            <div class="scan-title">🔍 JPX400 全銘柄スキャン</div>
-            <div class="scan-meta">
-                <span class="scan-stat">対象: <strong id="jpxTotal">--</strong> 銘柄</span>
-                <span class="scan-stat">処理済: <strong id="jpxProcessed">0</strong></span>
-                <span class="scan-stat" id="jpxBuyCount" style="color:var(--neon-green);display:none">🚀 <strong id="jpxBuyCnt">0</strong> BUY</span>
-            </div>
-            <div class="progress-wrap"><div id="jpxProgress" class="progress-bar"></div></div>
-            <div id="jpxStatusText" style="font-family:'Share Tech Mono',monospace;font-size:.65rem;color:var(--muted);margin-bottom:10px;">待機中 — ボタンを押して JPX400 全銘柄スキャンを開始します</div>
-            <button id="btnJpx400" class="btn-jpx400">⚡ JPX400 スキャン開始</button>
-        </div>
-
-        <!-- BUY SIGNAL 結果 -->
-        <div id="buyResultsWrap" style="display:none">
-            <div class="sub-head">🚀 BUY SIGNAL 検出銘柄</div>
-            <div id="buyResults" class="buy-results"></div>
-        </div>
-    </section>
-
-    <!-- ── WATCHLIST ── -->
-    <section class="card">
-        <div class="sec-head">
-            <h2>監視銘柄リスト</h2>
-            <button id="btnRefresh" style="background:none;border:1px solid rgba(0,210,255,.3);color:var(--neon-blue);border-radius:6px;padding:4px 10px;font-size:.65rem;cursor:pointer;font-family:'Share Tech Mono',monospace;">更新</button>
-        </div>
-        <div id="loader" class="loader"><div class="spin"></div><span>リアルタイムデータ取得中…</span></div>
-        <div id="wl" class="wl" style="display:none"></div>
-    </section>
-
-    <!-- ── SCAN HISTORY ── -->
-    <section class="card">
-        <div class="sec-head"><h2>📋 スキャン履歴</h2></div>
-        <div id="historyLoader" class="loader" style="padding:14px 0;"><div class="spin"></div><span>読込中…</span></div>
-        <div id="historyList" class="history-list" style="display:none"></div>
-    </section>
-
-    <!-- ── CONTROL PANEL ── -->
-    <section class="card">
-        <div class="sec-head"><h2>制御コンソール</h2></div>
-
-        <!-- RSI sliders -->
-        <div class="fg">
-            <div class="lr">
-                <span class="flabel">RSI 売られすぎ検出レベル</span>
-                <span id="osVal" class="fval os">30</span>
-            </div>
-            <input type="range" id="rsOS" class="sl-os" min="15" max="40" value="30">
-        </div>
-
-        <div class="fg">
-            <div class="lr">
-                <span class="flabel">RSI 買われすぎ検出レベル</span>
-                <span id="obVal" class="fval ob">70</span>
-            </div>
-            <input type="range" id="rsOB" class="sl-ob" min="60" max="85" value="70">
-        </div>
-
-        <div class="divider"></div>
-        <div class="sub-head">🌟 スイング BUY SIGNAL 条件（3条件 AND）</div>
-
-        <div class="fg">
-            <div class="lr">
-                <span class="flabel">RSI 反発帯 下限（BUY SIGNAL）</span>
-                <span id="swMinVal" class="fval sw">35</span>
-            </div>
-            <input type="range" id="swMin" class="sl-sw" min="25" max="45" value="35">
-        </div>
-
-        <div class="fg">
-            <div class="lr">
-                <span class="flabel">RSI 反発帯 上限（BUY SIGNAL）</span>
-                <span id="swMaxVal" class="fval sw">45</span>
-            </div>
-            <input type="range" id="swMax" class="sl-sw" min="35" max="60" value="45">
-        </div>
-
-        <div class="divider"></div>
-        <div class="sub-head">⚡ スイング複合条件フィルター</div>
-
-        <div class="toggle-row">
-            <div class="toggle-label">
-                25日線上向き を必須とする
-                <small>ON: 上昇トレンド中の押し目のみを BUY SIGNAL 対象に</small>
-            </div>
-            <label class="switch">
-                <input type="checkbox" id="toggleMA25" checked>
-                <span class="slider-sw"></span>
-            </label>
-        </div>
-
-        <div class="toggle-row" style="margin-top:8px">
-            <div class="toggle-label">
-                MACD ゴールデンクロス を必須とする
-                <small>ON: GC または GC直前（ヒスト収束中）も必須条件に追加</small>
-            </div>
-            <label class="switch">
-                <input type="checkbox" id="toggleMACD" checked>
-                <span class="slider-sw"></span>
-            </label>
-        </div>
-
-        <div class="toggle-row" style="margin-top:8px">
-            <div class="toggle-label">
-                BB −2σ タッチ を必須とする
-                <small>ON: ボリンジャーバンド下限タッチも必須条件に追加</small>
-            </div>
-            <label class="switch">
-                <input type="checkbox" id="toggleBB">
-                <span class="slider-sw"></span>
-            </label>
-        </div>
-
-        <div class="divider"></div>
-
-        <!-- Tickers -->
-        <div class="fg">
-            <div class="lr"><span class="flabel">監視対象コード（ウォッチリスト）</span></div>
-            <div id="tagWrap" class="tag-wrap">
-                <input type="text" id="tagInput" class="tag-input" placeholder="コード追加（例: 8306.T）">
+            <div class="flex items-center gap-3 text-xs bg-slate-900/60 px-4 py-2.5 rounded-xl border border-slate-800">
+                <span class="flex items-center gap-1.5"><span
+                        class="w-2 h-2 rounded-full bg-pink-500 animate-pulse"></span> LINE通知: 有効</span>
+                <span class="text-slate-500">|</span>
+                <span class="text-slate-400 font-medium" id="next-scan-label">次回自動スキャン: 読込中...</span>
             </div>
         </div>
 
-        <!-- Interval -->
-        <div class="fg">
-            <div class="lr"><span class="flabel">API ウェイト（遅延秒数）</span></div>
-            <select id="selInterval" class="sel">
-                <option value="1.0">1.0秒ディレイ（標準）</option>
-                <option value="2.0">2.0秒ディレイ（安全）</option>
-                <option value="5.0">5.0秒ディレイ（高負荷用）</option>
-            </select>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <button onclick="changeStrategy('oshime')" id="strat-oshime"
+                class="neon-card rounded-xl p-5 text-left transition-all duration-300 border border-emerald-500/50 bg-gradient-to-br from-emerald-950/20 to-transparent shadow-[0_0_15px_rgba(16,185,129,0.1)] cursor-pointer focus:outline-none">
+                <div class="flex justify-between items-center mb-1.5">
+                    <span class="text-emerald-400 font-bold tracking-wide text-sm mono-font">[01]
+                        押し目シグナル・モード</span>
+                    <i class="fa-solid fa-chart-line text-emerald-400 text-sm"></i>
+                </div>
+                <p class="text-xs text-slate-300 leading-relaxed font-medium">
+                    長期MA75上昇トレンド下での短期RSI売られすぎ、およびボリンジャーバンド-2σタッチを厳格にスクリーニング。
+                </p>
+            </button>
+
+            <button onclick="changeStrategy('junbari')" id="strat-junbari"
+                class="neon-card rounded-xl p-5 text-left transition-all duration-300 border border-slate-800/80 opacity-60 cursor-pointer focus:outline-none hover:opacity-90">
+                <div class="flex justify-between items-center mb-1.5">
+                    <span class="text-slate-400 font-bold tracking-wide text-sm mono-font">[02]
+                        順張りブレイク・モード</span>
+                    <i class="fa-solid fa-bolt text-slate-500 text-sm"></i>
+                </div>
+                <p class="text-xs text-slate-400 leading-relaxed font-medium">
+                    MA5×MA25のゴールデンクロス初動。出来高が過去平均1.7倍以上の大口流入トレンドのみを完全追随。
+                </p>
+            </button>
         </div>
 
-        <!-- Buttons -->
-        <div class="btn-group">
-            <button id="btnSave" class="btn btn-save">設定保存 ＆ ボット更新</button>
-            <button id="btnRun"  class="btn btn-run">即時スクリーニング（ウォッチリスト）</button>
-        </div>
-    </section>
-</div>
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-<!-- ── TERMINAL MODAL ── -->
-<div id="tModal" class="t-modal">
-    <div class="t-win">
-        <div class="t-hd">
-            <span class="t-hd-title">ボットスキャン端末 v3.0</span>
-            <button id="tClose" class="t-close">&times;</button>
-        </div>
-        <div id="tBody" class="t-body"></div>
-    </div>
-</div>
+            <div class="lg:col-span-2 neon-card rounded-2xl p-6 space-y-6">
+                <div class="border-b border-slate-800 pb-3 flex justify-between items-center">
+                    <h2 class="text-sm font-bold text-slate-300 flex items-center gap-2 tracking-wide">
+                        <span class="text-cyan-400">┃</span> 制御コンソール
+                    </h2>
+                    <span
+                        class="text-[10px] bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-bold text-slate-400 mono-font">機関投資家向けフィルター</span>
+                </div>
 
-<div id="toast" class="toast">完了</div>
-
-<script>
-// ── State ──────────────────────────────────────────────────────────────
-let tickers = [], rsiCfg={}, crossCfg={}, dcCfg={}, maCfg={}, bbCfg={}, compCfg={}, swingCfg={}, settings={};
-let jpxPollTimer = null;
-
-// ── DOM ────────────────────────────────────────────────────────────────
-const rsOS       = document.getElementById('rsOS');
-const rsOB       = document.getElementById('rsOB');
-const swMin      = document.getElementById('swMin');
-const swMax      = document.getElementById('swMax');
-const osVal      = document.getElementById('osVal');
-const obVal      = document.getElementById('obVal');
-const swMinVal   = document.getElementById('swMinVal');
-const swMaxVal   = document.getElementById('swMaxVal');
-const toggleMA25 = document.getElementById('toggleMA25');
-const toggleMACD = document.getElementById('toggleMACD');
-const toggleBB   = document.getElementById('toggleBB');
-const tagWrap    = document.getElementById('tagWrap');
-const tagInput   = document.getElementById('tagInput');
-const selInterval= document.getElementById('selInterval');
-const btnSave    = document.getElementById('btnSave');
-const btnRun     = document.getElementById('btnRun');
-const btnJpx400  = document.getElementById('btnJpx400');
-const btnRefresh = document.getElementById('btnRefresh');
-const tModal     = document.getElementById('tModal');
-const tBody      = document.getElementById('tBody');
-const tClose     = document.getElementById('tClose');
-const loader     = document.getElementById('loader');
-const wl         = document.getElementById('wl');
-const linePill   = document.getElementById('linePill');
-const lineText   = document.getElementById('lineText');
-const nextScan   = document.getElementById('nextScan');
-const toast      = document.getElementById('toast');
-const jpxProgress= document.getElementById('jpxProgress');
-const jpxTotal   = document.getElementById('jpxTotal');
-const jpxProcessed=document.getElementById('jpxProcessed');
-const jpxBuyCount= document.getElementById('jpxBuyCount');
-const jpxBuyCnt  = document.getElementById('jpxBuyCnt');
-const jpxStatusText=document.getElementById('jpxStatusText');
-const buyResultsWrap=document.getElementById('buyResultsWrap');
-const buyResults = document.getElementById('buyResults');
-const historyList= document.getElementById('historyList');
-const historyLoader=document.getElementById('historyLoader');
-
-// ── Sliders ────────────────────────────────────────────────────────────
-rsOS.addEventListener('input', e => osVal.textContent = e.target.value);
-rsOB.addEventListener('input', e => obVal.textContent = e.target.value);
-swMin.addEventListener('input', e => swMinVal.textContent = e.target.value);
-swMax.addEventListener('input', e => swMaxVal.textContent = e.target.value);
-
-// ── Tickers tag ────────────────────────────────────────────────────────
-tagWrap.addEventListener('click', () => tagInput.focus());
-tagInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter' || e.key === ',') {
-        e.preventDefault();
-        const v = tagInput.value.trim().toUpperCase();
-        if (v && !tickers.includes(v)) { tickers.push(v); renderTags(); }
-        tagInput.value = '';
-    }
-});
-function renderTags() {
-    tagWrap.querySelectorAll('.tag').forEach(t => t.remove());
-    tickers.forEach(t => {
-        const el = document.createElement('div'); el.className = 'tag';
-        el.innerHTML = `<span>${t}</span><button onclick="removeTicker('${t}')">&times;</button>`;
-        tagWrap.insertBefore(el, tagInput);
-    });
-}
-window.removeTicker = t => { tickers = tickers.filter(x => x !== t); renderTags(); };
-
-// ── Toast ──────────────────────────────────────────────────────────────
-function showToast(msg, color = '') {
-    toast.textContent = msg;
-    toast.style.borderColor = color || '';
-    toast.style.color       = color || '';
-    toast.classList.add('show');
-    setTimeout(() => toast.classList.remove('show'), 3000);
-}
-
-// ── Config Load ────────────────────────────────────────────────────────
-async function loadConfig() {
-    try {
-        const d = await fetch('/api/config').then(r => r.json());
-        tickers  = d.tickers || [];
-        rsiCfg   = d.strategies?.rsi          || {};
-        crossCfg = d.strategies?.crossover    || {};
-        dcCfg    = d.strategies?.daily_change || {};
-        maCfg    = d.strategies?.ma_trend     || {};
-        bbCfg    = d.strategies?.bollinger    || {};
-        compCfg  = d.strategies?.composite_entry || {};
-        swingCfg = d.swing_signal || {};
-        settings = d.settings || {};
-
-        rsOS.value = rsiCfg.oversold_threshold  || 30; osVal.textContent = rsOS.value;
-        rsOB.value = rsiCfg.overbought_threshold || 70; obVal.textContent = rsOB.value;
-        swMin.value = swingCfg.rsi_min || 35; swMinVal.textContent = swMin.value;
-        swMax.value = swingCfg.rsi_max || 45; swMaxVal.textContent = swMax.value;
-        toggleMA25.checked = maCfg.require_ma25_uptrend    ?? true;
-        toggleMACD.checked = swingCfg.require_macd_cross   ?? true;
-        toggleBB.checked   = bbCfg.require_lower_band_touch ?? false;
-        selInterval.value  = (settings.delay_seconds || 1.0).toFixed(1);
-        renderTags();
-
-        if (d.line_connected) {
-            linePill.className = 'line-pill'; lineText.textContent = 'LINE 連携中';
-        } else {
-            linePill.className = 'line-pill off'; lineText.textContent = 'LINE 未設定';
-        }
-        if (d.next_scan_time) {
-            const dt = new Date(d.next_scan_time);
-            const fmt = dt.toLocaleString('ja-JP', { timeZone:'Asia/Tokyo', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' });
-            nextScan.textContent = `次回自動スキャン: ${fmt} JST`;
-        }
-    } catch(e) { showToast('設定の読み込みに失敗'); }
-}
-
-// ── Stocks Load ────────────────────────────────────────────────────────
-async function loadStocks() {
-    loader.style.display = 'flex'; wl.style.display = 'none'; wl.innerHTML = '';
-    try {
-        const stocks = await fetch('/api/stocks').then(r => r.json());
-        if (!Array.isArray(stocks) || stocks.length === 0) {
-            wl.innerHTML = `<div class="empty-state">監視中の銘柄がありません</div>`;
-        } else {
-            stocks.forEach(s => wl.appendChild(buildCard(s)));
-        }
-        loader.style.display = 'none'; wl.style.display = 'flex';
-    } catch(e) {
-        loader.innerHTML = `<span style="color:var(--neon-pink)">ライブデータの取得に失敗しました</span>`;
-    }
-}
-btnRefresh.addEventListener('click', loadStocks);
-
-function buildCard(s) {
-    const isUp = s.change_percent >= 0;
-    const cc   = isUp ? 'up' : 'dn';
-    const sign = isUp ? '+' : '';
-    const priceStr = `${s.current_price?.toLocaleString('ja-JP',{maximumFractionDigits:1}) || '--'}円`;
-
-    // RSI color
-    let rsiClass = 'rsi-neutral';
-    if (s.rsi !== null && s.rsi !== undefined) {
-        const rsiMin = parseFloat(swMin.value) || 35;
-        const rsiMax = parseFloat(swMax.value) || 45;
-        if (s.rsi <= 30)               rsiClass = 'rsi-low';
-        else if (s.rsi >= rsiMin && s.rsi <= rsiMax) rsiClass = 'rsi-swing';
-        else if (s.rsi >= 70)          rsiClass = 'rsi-high';
-    }
-
-    // MA25 deviation
-    let devClass = 'dev-neutral', devStr = '--';
-    if (s.ma25_deviation_pct !== null && s.ma25_deviation_pct !== undefined) {
-        devStr   = `${s.ma25_deviation_pct >= 0 ? '+' : ''}${s.ma25_deviation_pct.toFixed(1)}%`;
-        devClass = s.ma25_deviation_pct > 0 ? 'dev-up' : 'dev-dn';
-    }
-
-    // MA25 trend
-    const trendIcon  = s.ma25_uptrend ? '↗' : '↘';
-    const trendClass = s.ma25_uptrend ? 'trend-up' : 'trend-dn';
-
-    // MACD
-    let macdHtml = '';
-    if (s.macd !== null && s.macd !== undefined) {
-        let macdClass = 'macd-neg', macdLabel = 'MACD';
-        if (s.macd_crossover)     { macdClass = 'macd-gc';  macdLabel = 'MACD GC'; }
-        else if (s.macd_pre_crossover) { macdClass = 'macd-pre'; macdLabel = 'MACD GC前'; }
-        macdHtml = `<span class="metric"><span class="mk">${macdLabel}</span><span class="mv ${macdClass}">${s.macd_hist !== null ? (s.macd_hist >= 0 ? '+' : '') + s.macd_hist?.toFixed(2) : '--'}</span></span>`;
-    }
-
-    // BB touch
-    const bbTouchHtml = s.bb_lower_touch
-        ? `<span class="metric"><span class="mk">BB</span><span class="mv bb-touch">−2σ触</span></span>` : '';
-
-    // Badges
-    let badges = '';
-    if (s.buy_signal) {
-        badges += `<span class="badge buy-signal">🚀 BUY SIGNAL</span>`;
-    }
-    if (s.is_prime_entry) {
-        badges += `<span class="badge prime">⭐ 絶好エントリー</span>`;
-    }
-    if (s.triggered && s.signals.length > 0 && !s.buy_signal) {
-        s.signals.forEach(sig => {
-            if (sig.includes('⭐') || sig.includes('BUY')) return;
-            const isBuy  = sig.includes('売られすぎ') || sig.includes('ゴールデンクロス') || sig.includes('押し目') || sig.includes('GC');
-            const isSell = sig.includes('買われすぎ') || sig.includes('デッドクロス') || sig.includes('下落');
-            const cls    = isBuy ? 'buy' : isSell ? 'sell' : 'neutral';
-            const label  = isBuy ? '買いシグナル' : isSell ? '売りシグナル' : '情報';
-            badges += `<span class="badge ${cls}">${label}</span>`;
-        });
-    }
-    if (!badges) badges = `<span class="badge neutral">監視中</span>`;
-
-    const card = document.createElement('div');
-    const cardClass = s.buy_signal ? 'sc buy-signal-card' : (s.is_prime_entry ? 'sc prime-entry' : 'sc');
-    card.className = cardClass;
-    card.innerHTML = `
-        <div class="sc-top">
-            <div class="sc-meta">
-                <span class="ticker">${s.ticker}</span>
-                <span class="nm">${s.name}</span>
-            </div>
-            <svg class="spark" viewBox="0 0 80 24">${sparkPath(s.sparkline, isUp)}</svg>
-            <div class="sc-price">
-                <span class="price">${priceStr}</span>
-                <span class="chg ${cc}">${sign}${s.change_percent.toFixed(2)}%</span>
-            </div>
-        </div>
-        <div class="sc-metrics">
-            <span class="metric"><span class="mk">RSI</span><span class="mv ${rsiClass}">${s.rsi ?? '--'}</span></span>
-            <span class="metric"><span class="mk">25日乖離</span><span class="mv ${devClass}">${devStr}</span></span>
-            <span class="metric"><span class="mk">25日線</span><span class="mv ${trendClass}">${trendIcon} ${s.ma25 ? s.ma25.toLocaleString('ja-JP') : '--'}円</span></span>
-            ${s.ma75 ? `<span class="metric"><span class="mk">75日線</span><span class="mv dev-neutral">${s.ma75.toLocaleString('ja-JP')}円</span></span>` : ''}
-            ${macdHtml}
-            ${bbTouchHtml}
-        </div>
-        <div class="sc-bottom">${badges}</div>
-    `;
-    return card;
-}
-
-function sparkPath(prices, isUp) {
-    if (!prices || prices.length < 2) return '';
-    const W=80, H=24, P=2;
-    const mn = Math.min(...prices), mx = Math.max(...prices), range = mx - mn || 1;
-    const pts = prices.map((v,i) => {
-        const x = (i / (prices.length-1)) * W;
-        const y = H - P - ((v - mn) / range) * (H - 2*P);
-        return `${x},${y}`;
-    });
-    return `<path class="sp ${isUp?'up':'dn'}" d="M ${pts.join(' L ')}"/>`;
-}
-
-// ── Save Config ────────────────────────────────────────────────────────
-btnSave.addEventListener('click', async () => {
-    btnSave.disabled = true; btnSave.style.opacity = '.6';
-    const payload = {
-        tickers,
-        rsi: {
-            enabled:              rsiCfg.enabled ?? true,
-            period:               rsiCfg.period  ?? 14,
-            oversold_threshold:   parseFloat(rsOS.value),
-            overbought_threshold: parseFloat(rsOB.value),
-        },
-        crossover: {
-            enabled:      crossCfg.enabled      ?? true,
-            short_period: crossCfg.short_period  ?? 5,
-            long_period:  crossCfg.long_period   ?? 25,
-        },
-        daily_change: {
-            enabled:           dcCfg.enabled           ?? true,
-            threshold_percent: dcCfg.threshold_percent ?? 3.0,
-        },
-        ma_trend: {
-            enabled:              maCfg.enabled       ?? true,
-            ma5_period:           maCfg.ma5_period     ?? 5,
-            ma25_period:          maCfg.ma25_period    ?? 25,
-            ma75_period:          maCfg.ma75_period    ?? 75,
-            require_ma25_uptrend: toggleMA25.checked,
-        },
-        bollinger: {
-            enabled:                  bbCfg.enabled  ?? true,
-            period:                   bbCfg.period   ?? 20,
-            std_dev:                  bbCfg.std_dev  ?? 2.0,
-            require_lower_band_touch: toggleBB.checked,
-        },
-        composite_entry: { enabled: compCfg.enabled ?? true },
-        swing_signal: {
-            rsi_min:              parseFloat(swMin.value),
-            rsi_max:              parseFloat(swMax.value),
-            require_ma25_uptrend: toggleMA25.checked,
-            require_macd_cross:   toggleMACD.checked,
-        },
-    };
-    try {
-        const r = await fetch('/api/config', {
-            method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify(payload),
-        });
-        if (r.ok) { showToast('設定を保存・適用しました', 'var(--neon-green)'); loadStocks(); }
-        else { const e = await r.json(); showToast(`エラー: ${e.detail}`); }
-    } catch(e) { showToast('設定の保存に失敗しました'); }
-    finally { btnSave.disabled = false; btnSave.style.opacity = '1'; }
-});
-
-// ── Watchlist Run ──────────────────────────────────────────────────────
-btnRun.addEventListener('click', async () => {
-    tModal.classList.add('open');
-    tBody.innerHTML = `
-        <div class="tl b">&gt; ウォッチリストスクリーニング開始…</div>
-        <div class="tl">&gt; Yahoo Finance API に接続中…</div>`;
-    try {
-        const res = await fetch('/api/run', { method: 'POST' });
-        const r   = await res.json();
-        if (r.status === 'success') {
-            tBody.innerHTML += `<div class="tl g">&gt; スキャン完了 — 対象: ${tickers.join(', ')}</div>`;
-            if (r.buy_signal_count > 0) {
-                tBody.innerHTML += `<div class="tl g">&gt; 🚀 BUY SIGNAL: ${r.buy_signal_count} 件検出！</div>`;
-            }
-            if (r.matched_count === 0) {
-                tBody.innerHTML += `<div class="tl">&gt; シグナルなし。LINE通知をスキップしました。</div>`;
-            } else {
-                r.matched_results.forEach(m => {
-                    const bs = m.buy_signal ? ' 🚀 BUY SIGNAL' : (m.is_prime_entry ? ' ⭐絶好エントリー' : '');
-                    tBody.innerHTML += `<div class="tl ${m.buy_signal ? 'g' : ''}">`
-                        + `  * [${m.ticker}] ${m.name}${bs}\n`
-                        + `    ${m.current_price?.toLocaleString('ja-JP')}円 | RSI: ${m.rsi ?? '--'}`
-                        + ` | MACD: ${m.macd_crossover ? '✅GC' : m.macd_pre_crossover ? '⚡GC前' : '--'}\n`
-                        + `    ${m.signals.join(' / ')}</div>`;
-                });
-                tBody.innerHTML += r.sent_line
-                    ? `<div class="tl g">&gt; LINE に BUY SIGNAL 通知を送信しました！</div>`
-                    : `<div class="tl p">&gt; LINE 通知を送信しませんでした（資格情報を確認してください）</div>`;
-            }
-            tBody.innerHTML += `<div class="tl b">&gt; 処理完了 [終了コード: 0]</div>`;
-        } else {
-            tBody.innerHTML += `<div class="tl p">&gt; エラー: ${r.detail}</div>`;
-        }
-    } catch(e) {
-        tBody.innerHTML += `<div class="tl p">&gt; 接続エラーが発生しました。</div>`;
-    }
-});
-tClose.addEventListener('click', () => { tModal.classList.remove('open'); loadStocks(); });
-
-// ── JPX400 Scan ────────────────────────────────────────────────────────
-btnJpx400.addEventListener('click', async () => {
-    try {
-        const r = await fetch('/api/jpx400/scan', { method: 'POST' });
-        if (r.status === 409) {
-            const e = await r.json(); showToast(e.detail); return;
-        }
-        const d = await r.json();
-        jpxTotal.textContent = d.total_tickers || '--';
-        setBtnRunning(true);
-        jpxStatusText.textContent = 'スキャン実行中…';
-        startJpxPolling();
-    } catch(e) { showToast('スキャン開始に失敗しました'); }
-});
-
-function setBtnRunning(running) {
-    btnJpx400.disabled = running;
-    btnJpx400.className = running ? 'btn-jpx400 running' : 'btn-jpx400';
-    btnJpx400.textContent = running ? '⚡ スキャン実行中…' : '⚡ JPX400 スキャン開始';
-}
-
-function startJpxPolling() {
-    if (jpxPollTimer) clearInterval(jpxPollTimer);
-    jpxPollTimer = setInterval(pollJpxStatus, 3000);
-}
-
-async function pollJpxStatus() {
-    try {
-        const d = await fetch('/api/jpx400/status').then(r => r.json());
-        const pct = d.total > 0 ? (d.processed / d.total) * 100 : 0;
-        jpxProgress.style.width = pct + '%';
-        jpxProcessed.textContent = d.processed || 0;
-        jpxTotal.textContent     = d.total      || '--';
-
-        if (d.buy_count > 0) {
-            jpxBuyCount.style.display = 'inline';
-            jpxBuyCnt.textContent = d.buy_count;
-        }
-
-        if (d.status === 'running') {
-            jpxStatusText.textContent = `スキャン実行中… ${d.processed}/${d.total} 処理済み`;
-        } else if (d.status === 'completed') {
-            clearInterval(jpxPollTimer); jpxPollTimer = null;
-            setBtnRunning(false);
-            jpxProgress.style.width = '100%';
-            jpxStatusText.textContent = `✅ スキャン完了 — ${d.buy_count} 件の BUY SIGNAL を検出`;
-            showToast(`JPX400 スキャン完了: ${d.buy_count} BUY SIGNAL`, 'var(--neon-green)');
-
-            // 結果表示
-            if (d.buy_signals && d.buy_signals.length > 0) {
-                buyResults.innerHTML = '';
-                d.buy_signals.forEach(s => buyResults.appendChild(buildBuyCard(s)));
-                buyResultsWrap.style.display = 'block';
-            }
-            loadHistory();
-        } else if (d.status === 'failed') {
-            clearInterval(jpxPollTimer); jpxPollTimer = null;
-            setBtnRunning(false);
-            jpxStatusText.textContent = `❌ スキャン失敗: ${d.error || '不明なエラー'}`;
-            showToast('スキャンでエラーが発生しました');
-        } else if (d.status === 'idle') {
-            clearInterval(jpxPollTimer); jpxPollTimer = null;
-        }
-    } catch(e) {}
-}
-
-function buildBuyCard(s) {
-    const priceStr = `${s.current_price?.toLocaleString('ja-JP',{maximumFractionDigits:1}) || '--'}円`;
-    const chg      = s.change_percent || 0;
-    const chgClass = chg >= 0 ? 'chg-up' : 'chg-dn';
-    const chgStr   = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
-    const macdLabel = s.macd_crossover ? '✅ ゴールデンクロス' : '⚡ GC直前（収束中）';
-    const rsiStr   = s.rsi !== null ? s.rsi.toFixed(1) : '--';
-    const ma25Str  = s.ma25 ? s.ma25.toLocaleString('ja-JP') + '円' : '--';
-    const macdHStr = s.macd_hist !== null ? (s.macd_hist >= 0 ? '+' : '') + s.macd_hist?.toFixed(3) : '--';
-
-    const card = document.createElement('div');
-    card.className = 'buy-card';
-    card.innerHTML = `
-        <div class="buy-card-top">
-            <div class="buy-card-meta">
-                <div class="ticker">${s.ticker}</div>
-                <div class="nm">${s.name}</div>
-            </div>
-            <span class="buy-badge">🚀 BUY SIGNAL</span>
-        </div>
-        <div class="buy-price">${priceStr} <span class="${chgClass}">${chgStr}</span></div>
-        <div class="conditions">
-            <div class="cond-row">
-                <span class="${s.ma25_uptrend ? 'cond-ok' : 'cond-ng'}">${s.ma25_uptrend ? '✅' : '☐'}</span>
-                <span class="cond-label">条件①: 25日MA 上向き</span>
-                <span class="cond-val">${ma25Str}</span>
-            </div>
-            <div class="cond-row">
-                <span class="cond-ok">✅</span>
-                <span class="cond-label">条件②: RSI(14) 反発帯</span>
-                <span class="cond-val" style="color:var(--neon-gold)">${rsiStr}</span>
-            </div>
-            <div class="cond-row">
-                <span class="cond-ok">✅</span>
-                <span class="cond-label">条件③: ${macdLabel}</span>
-                <span class="cond-val ${s.macd_crossover ? 'cond-gc' : 'cond-pre'}">${macdHStr}</span>
-            </div>
-        </div>
-    `;
-    return card;
-}
-
-// ── History ────────────────────────────────────────────────────────────
-async function loadHistory() {
-    historyLoader.style.display = 'flex';
-    historyList.style.display   = 'none';
-    try {
-        const sessions = await fetch('/api/history/sessions?limit=10').then(r => r.json());
-        historyList.innerHTML = '';
-        if (!sessions.length) {
-            historyList.innerHTML = `<div class="empty-state">スキャン履歴がありません</div>`;
-        } else {
-            sessions.forEach(s => {
-                const dt = new Date(s.started_at + 'Z');
-                const fmt = dt.toLocaleString('ja-JP', { timeZone:'Asia/Tokyo', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' });
-                const typeLabel = s.scan_type === 'scheduled' ? '⏰ 定時' : (s.scan_type === 'jpx400' ? '📡 JPX400' : '👆 手動');
-                const hasBuy = s.buy_signal_count > 0;
-                const item = document.createElement('div');
-                item.className = 'hist-item';
-                item.innerHTML = `
-                    <div class="hist-meta">
-                        <strong>${fmt} JST</strong>　${typeLabel}<br>
-                        処理: ${s.processed || 0}/${s.total_tickers || 0}銘柄
-                        ${s.sent_line ? '　📩 LINE送信済' : ''}
+                <div class="space-y-5">
+                    <div>
+                        <div class="flex justify-between items-center mb-2 text-xs font-bold">
+                            <span class="text-slate-400">RSI 売られすぎ検出レベル</span>
+                            <span
+                                class="text-emerald-400 bg-emerald-950/40 border border-emerald-500/20 px-2 py-0.5 rounded mono-font">30</span>
+                        </div>
+                        <input type="range" min="10" max="50" value="30"
+                            class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500">
                     </div>
-                    <span class="hist-badge ${hasBuy ? 'has-signal' : 'no-signal'}">
-                        ${hasBuy ? `🚀 ${s.buy_signal_count} BUY` : 'シグナルなし'}
-                    </span>
+
+                    <div>
+                        <div class="flex justify-between items-center mb-2 text-xs font-bold">
+                            <span class="text-slate-400">RSI 買われすぎ検出レベル</span>
+                            <span
+                                class="text-pink-500 bg-pink-950/40 border border-pink-500/20 px-2 py-0.5 rounded mono-font">70</span>
+                        </div>
+                        <input type="range" min="50" max="90" value="70"
+                            class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-pink-500">
+                    </div>
+
+                    <div>
+                        <div class="flex justify-between items-center mb-2 text-xs font-bold">
+                            <span class="text-slate-400">✨ スイング BUY SIGNAL 条件 (RSI反発帯上限)</span>
+                            <span
+                                class="text-amber-400 bg-amber-950/40 border border-amber-500/20 px-2 py-0.5 rounded mono-font"
+                                id="rsi-val">23</span>
+                        </div>
+                        <input type="range" min="15" max="45" value="23" id="rsi-slider"
+                            class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500">
+                    </div>
+                </div>
+
+                <div class="pt-2 space-y-4">
+                    <h3 class="text-xs font-bold text-cyan-400 flex items-center gap-1.5 tracking-wide">
+                        <i class="fa-solid fa-bolt text-[11px]"></i> プレミアムクオリティ・フィルター
+                    </h3>
+
+                    <div class="space-y-3">
+                        <div
+                            class="bg-slate-900/50 border border-slate-800/60 p-4 rounded-xl flex justify-between items-center">
+                            <div>
+                                <h4 class="text-xs font-bold text-slate-200">時価総額クオリティ・足切り（フィルター自動適用）</h4>
+                                <p class="text-[11px] text-slate-500 mt-0.5 font-medium">ON:
+                                    時価総額500億円以上の中大型株のみに限定し、仕手株・ボロ株を除外</p>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" checked class="sr-only peer">
+                                <div
+                                    class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-slate-300 after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500 peer-checked:after:bg-white">
+                                </div>
+                            </label>
+                        </div>
+
+                        <div
+                            class="bg-slate-900/50 border border-slate-800/60 p-4 rounded-xl flex justify-between items-center">
+                            <div>
+                                <h4 class="text-xs font-bold text-slate-200">5日平均売買代金制限（流動性リスク防止）</h4>
+                                <p class="text-[11px] text-slate-500 mt-0.5 font-medium">ON:
+                                    直近売買代金が5億円未満の薄商い銘柄を排除し、スリッページを防止</p>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" checked class="sr-only peer">
+                                <div
+                                    class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-slate-300 after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500 peer-checked:after:bg-white">
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="space-y-6">
+                <div class="neon-card rounded-2xl p-6 space-y-4">
+                    <div class="text-xs font-bold text-slate-400 flex items-center gap-2 tracking-wide">
+                        <i class="fa-solid fa-satellite-dish text-cyan-400"></i> ライブ監査コントローラー
+                    </div>
+
+                    <div class="space-y-2">
+                        <p class="text-[11px] font-bold text-slate-500">リスク許容度モード</p>
+                        <div class="grid grid-cols-3 gap-2" id="risk-mode-group">
+                            <button type="button" data-mode="堅実" onclick="selectRiskMode('堅実')"
+                                class="risk-mode-btn neon-card rounded-lg py-2.5 text-xs font-bold border border-emerald-500/50 risk-mode-active transition-all">
+                                堅実
+                            </button>
+                            <button type="button" data-mode="標準" onclick="selectRiskMode('標準')"
+                                class="risk-mode-btn neon-card rounded-lg py-2.5 text-xs font-bold border border-slate-800 opacity-70 hover:opacity-100 transition-all text-slate-300">
+                                標準
+                            </button>
+                            <button type="button" data-mode="積極" onclick="selectRiskMode('積極')"
+                                class="risk-mode-btn neon-card rounded-lg py-2.5 text-xs font-bold border border-slate-800 opacity-70 hover:opacity-100 transition-all text-slate-300">
+                                積極
+                            </button>
+                        </div>
+                    </div>
+
+                    <button id="scan-btn" onclick="startMarketScan()"
+                        class="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-400 text-slate-900 font-extrabold py-3.5 px-4 rounded-xl shadow-[0_4px_15px_rgba(16,185,129,0.25)] transition-all duration-200 text-xs tracking-wider flex items-center justify-center gap-2 cursor-pointer border-t border-emerald-400/20 disabled:cursor-not-allowed">
+                        <i class="fa-solid fa-robot text-xs" id="scan-btn-icon"></i>
+                        <span id="scan-btn-label">STELLAR に診断依頼</span>
+                    </button>
+                    <p class="text-[10px] text-slate-500 leading-relaxed" id="scan-status">モードを選び、Dify 経由で STELLAR 診断を開始します。</p>
+                </div>
+
+                <div class="neon-card rounded-2xl p-6 space-y-4">
+                    <div class="flex justify-between items-center">
+                        <div class="text-xs font-bold text-slate-400 tracking-wide">
+                            コア・ウォッチリスト
+                        </div>
+                        <span id="watchlist-count"
+                            class="text-[10px] bg-slate-900 text-slate-500 border border-slate-800 px-2 py-0.5 rounded font-bold mono-font">0 銘柄</span>
+                    </div>
+
+                    <div id="watchlist-area"
+                        class="min-h-[72px] rounded-xl border border-dashed border-slate-800/80 bg-slate-900/30 p-3">
+                        <div id="watchlist-empty"
+                            class="flex flex-col items-center justify-center text-center py-4 px-2">
+                            <i class="fa-regular fa-bookmark text-slate-600 text-sm mb-2"></i>
+                            <p class="text-[11px] text-slate-500 leading-relaxed">
+                                ウォッチリストに銘柄が登録されていません。<br>
+                                コードを入力して追加してください。
+                            </p>
+                        </div>
+                        <div id="watchlist-badges" class="hidden flex flex-wrap gap-2 text-xs font-bold mono-font"></div>
+                    </div>
+
+                    <div class="flex gap-2">
+                        <input type="text" id="watchlist-input" placeholder="コード追加（例: 9101.T または 9101）"
+                            class="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-cyan-500 font-medium text-slate-300 mono-font"
+                            onkeydown="if(event.key==='Enter') addWatchlistTicker()">
+                        <button type="button" onclick="addWatchlistTicker()" id="watchlist-add-btn"
+                            class="bg-cyan-800 hover:bg-cyan-700 disabled:bg-slate-700 text-white font-bold px-4 py-2.5 rounded-xl text-xs transition-colors shrink-0">
+                            追加
+                        </button>
+                    </div>
+                    <p id="watchlist-feedback" class="text-[10px] text-slate-500 min-h-[14px]"></p>
+                </div>
+            </div>
+        </div>
+
+        <div id="chat-container"
+            class="neon-card rounded-2xl p-6 border-t border-t-cyan-500/30 bg-gradient-to-b from-cyan-950/5 to-transparent space-y-4">
+            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h2 class="text-sm font-bold text-cyan-400 flex items-center gap-2 tracking-wide">
+                    <i class="fa-solid fa-comments"></i> STELLAR 診断チャット
+                    <span class="text-[10px] text-slate-500 font-normal">via Dify</span>
+                </h2>
+                <span id="dify-status-badge"
+                    class="text-[9px] bg-slate-900 text-slate-400 border border-slate-700 px-2 py-0.5 rounded font-bold mono-font">接続確認中</span>
+            </div>
+
+            <div id="chat-messages" class="chat-scroll space-y-3 min-h-[200px]">
+                <div class="flex gap-3 items-start">
+                    <div class="w-8 h-8 rounded-lg bg-emerald-950 border border-emerald-800 flex items-center justify-center shrink-0">
+                        <i class="fa-solid fa-star text-emerald-400 text-xs"></i>
+                    </div>
+                    <div class="bg-slate-900/70 border border-slate-800 rounded-xl rounded-tl-sm px-4 py-3 text-xs text-slate-300 leading-relaxed max-w-[90%]">
+                        STELLAR SCREENER へようこそ。リスクモード（堅実・標準・積極）を選んで「STELLAR に診断依頼」を押すか、下の入力欄から直接メッセージを送ってください。
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex gap-2 pt-2 border-t border-slate-800/60">
+                <input type="text" id="chat-input" placeholder="例: 堅実 / 1605を判断して"
+                    class="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-cyan-500 text-slate-200"
+                    onkeydown="if(event.key==='Enter') sendChatMessage()">
+                <button onclick="sendChatMessage()" id="chat-send-btn"
+                    class="bg-cyan-700 hover:bg-cyan-600 disabled:bg-slate-700 text-white font-bold px-4 py-2.5 rounded-xl text-xs transition-colors">
+                    送信
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        let selectedRiskMode = '堅実';
+        let conversationId = null;
+        let isChatBusy = false;
+        let watchlistTickers = [];
+        const RISK_MODES = ['堅実', '標準', '積極'];
+
+        function extractStockCode(raw) {
+            const trimmed = (raw || '').trim();
+            if (!trimmed) return null;
+            if (/^\d{4}$/.test(trimmed)) return trimmed;
+            if (/^\d{4}\.T$/i.test(trimmed)) return trimmed.replace(/\.T$/i, '');
+            const match = trimmed.match(/(\d{4})\.T/i) || trimmed.match(/(\d{4})/);
+            return match ? match[1] : null;
+        }
+
+        function extractWatchlistCodes(tickers) {
+            const codes = tickers
+                .map((t) => t.replace(/\.T$/i, ''))
+                .filter((c) => /^\d{4}$/.test(c));
+            return codes.length > 0 ? codes.join(',') : null;
+        }
+
+        function buildCodesDisplayLabel(codes, mode = null) {
+            const tickerLabel = codes
+                .split(',')
+                .map((c) => `${c}.T`)
+                .join(', ');
+            if (mode) {
+                return `【${mode}】${tickerLabel} を診断依頼`;
+            }
+            return `${tickerLabel} の診断を依頼`;
+        }
+
+        function buildDifyRequest(rawInput = null, options = {}) {
+            const useWatchlist = options.useWatchlist === true;
+            const trimmed = (rawInput || '').trim();
+            let codes = null;
+            let mode = options.mode || selectedRiskMode;
+
+            if (useWatchlist) {
+                codes = extractWatchlistCodes(watchlistTickers);
+            } else if (RISK_MODES.includes(trimmed)) {
+                codes = extractWatchlistCodes(watchlistTickers);
+                mode = trimmed;
+            } else {
+                codes = extractStockCode(trimmed);
+            }
+
+            if (!codes) {
+                return null;
+            }
+
+            return {
+                query: codes,
+                code: codes,
+                mode,
+                displayText: buildCodesDisplayLabel(codes, useWatchlist || RISK_MODES.includes(trimmed) ? mode : null),
+            };
+        }
+
+        function normalizeWatchlistTicker(raw) {
+            const value = raw.trim().toUpperCase();
+            if (!value) return null;
+            const digitsOnly = value.replace('.T', '');
+            if (/^\d{4}$/.test(digitsOnly)) return `${digitsOnly}.T`;
+            if (/^\d{4}\.T$/.test(value)) return value;
+            return null;
+        }
+
+        function setWatchlistFeedback(message, isError = false) {
+            const el = document.getElementById('watchlist-feedback');
+            el.textContent = message;
+            el.className = isError
+                ? 'text-[10px] text-pink-400 min-h-[14px]'
+                : 'text-[10px] text-slate-500 min-h-[14px]';
+        }
+
+        function renderWatchlist() {
+            const emptyEl = document.getElementById('watchlist-empty');
+            const badgesEl = document.getElementById('watchlist-badges');
+            const countEl = document.getElementById('watchlist-count');
+
+            countEl.textContent = `${watchlistTickers.length} 銘柄`;
+            badgesEl.innerHTML = '';
+
+            if (watchlistTickers.length === 0) {
+                emptyEl.classList.remove('hidden');
+                badgesEl.classList.add('hidden');
+                return;
+            }
+
+            emptyEl.classList.add('hidden');
+            badgesEl.classList.remove('hidden');
+
+            watchlistTickers.forEach((ticker) => {
+                const badge = document.createElement('span');
+                badge.className =
+                    'watchlist-badge bg-cyan-950/60 border border-cyan-800/50 text-cyan-400 px-2.5 py-1.5 rounded-lg flex items-center gap-2';
+                badge.innerHTML = `
+                    <span>${escapeHtml(ticker)}</span>
+                    <button type="button" onclick="removeWatchlistTicker('${ticker}')"
+                        class="watchlist-remove text-pink-500/80 hover:text-pink-400 leading-none"
+                        aria-label="${ticker} を削除">
+                        <i class="fa-solid fa-xmark text-[10px]"></i>
+                    </button>
                 `;
-                historyList.appendChild(item);
+                badgesEl.appendChild(badge);
             });
         }
-        historyLoader.style.display = 'none';
-        historyList.style.display   = 'flex';
-    } catch(e) {
-        historyLoader.innerHTML = `<span style="color:var(--muted)">履歴の読み込みに失敗</span>`;
-    }
-}
 
-// ── Init ───────────────────────────────────────────────────────────────
-loadConfig();
-loadStocks();
-loadHistory();
-
-// 既存のスキャンが実行中なら自動的にポーリング再開
-(async () => {
-    try {
-        const d = await fetch('/api/jpx400/status').then(r => r.json());
-        if (d.status === 'running') {
-            jpxTotal.textContent = d.total || '--';
-            setBtnRunning(true);
-            jpxStatusText.textContent = 'スキャン再接続中…';
-            startJpxPolling();
+        async function saveWatchlist() {
+            const response = await fetch('/api/watchlist', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tickers: watchlistTickers }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.detail || `保存に失敗しました (${response.status})`);
+            }
+            watchlistTickers = data.tickers || watchlistTickers;
+            renderWatchlist();
         }
-    } catch(e) {}
-})();
-</script>
+
+        async function loadWatchlist() {
+            try {
+                const data = await fetch('/api/watchlist').then((r) => r.json());
+                watchlistTickers = Array.isArray(data.tickers) ? data.tickers : [];
+                renderWatchlist();
+            } catch (_) {
+                watchlistTickers = [];
+                renderWatchlist();
+                setWatchlistFeedback('ウォッチリストの読み込みに失敗しました。', true);
+            }
+        }
+
+        async function addWatchlistTicker() {
+            const input = document.getElementById('watchlist-input');
+            const addBtn = document.getElementById('watchlist-add-btn');
+            const normalized = normalizeWatchlistTicker(input.value);
+
+            if (!normalized) {
+                setWatchlistFeedback('4桁の銘柄コードを入力してください（例: 9101 または 9101.T）', true);
+                return;
+            }
+            if (watchlistTickers.includes(normalized)) {
+                setWatchlistFeedback(`${normalized} はすでに登録されています。`, true);
+                return;
+            }
+
+            addBtn.disabled = true;
+            watchlistTickers = [...watchlistTickers, normalized].sort();
+            input.value = '';
+
+            try {
+                await saveWatchlist();
+                setWatchlistFeedback(`${normalized} をウォッチリストに追加しました。`);
+            } catch (error) {
+                watchlistTickers = watchlistTickers.filter((t) => t !== normalized);
+                renderWatchlist();
+                setWatchlistFeedback(error.message, true);
+            } finally {
+                addBtn.disabled = false;
+                input.focus();
+            }
+        }
+
+        async function removeWatchlistTicker(ticker) {
+            const previous = [...watchlistTickers];
+            watchlistTickers = watchlistTickers.filter((t) => t !== ticker);
+            renderWatchlist();
+
+            try {
+                await saveWatchlist();
+                setWatchlistFeedback(`${ticker} をウォッチリストから削除しました。`);
+            } catch (error) {
+                watchlistTickers = previous;
+                renderWatchlist();
+                setWatchlistFeedback(error.message, true);
+            }
+        }
+
+        function selectRiskMode(mode) {
+            selectedRiskMode = mode;
+            document.querySelectorAll('.risk-mode-btn').forEach((btn) => {
+                const isActive = btn.dataset.mode === mode;
+                btn.classList.toggle('risk-mode-active', isActive);
+                btn.classList.toggle('border-emerald-500/50', isActive);
+                btn.classList.toggle('border-slate-800', !isActive);
+                btn.classList.toggle('opacity-70', !isActive);
+                btn.classList.toggle('text-emerald-400', isActive);
+                btn.classList.toggle('text-slate-300', !isActive);
+            });
+            document.getElementById('scan-status').textContent =
+                `選択中: 【${mode}】モード。Dify 経由で STELLAR に診断を依頼します。`;
+        }
+
+        function scrollChatToBottom() {
+            const box = document.getElementById('chat-messages');
+            box.scrollTop = box.scrollHeight;
+        }
+
+        function appendUserMessage(text) {
+            const wrap = document.createElement('div');
+            wrap.className = 'flex gap-3 items-start justify-end';
+            wrap.innerHTML = `
+                <div class="bg-emerald-900/40 border border-emerald-700/40 rounded-xl rounded-tr-sm px-4 py-3 text-xs text-emerald-100 leading-relaxed max-w-[85%]">
+                    ${escapeHtml(text)}
+                </div>
+                <div class="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center shrink-0">
+                    <i class="fa-solid fa-user text-slate-400 text-xs"></i>
+                </div>
+            `;
+            document.getElementById('chat-messages').appendChild(wrap);
+            scrollChatToBottom();
+        }
+
+        function appendStellarMessageShell() {
+            const wrap = document.createElement('div');
+            wrap.className = 'flex gap-3 items-start';
+            wrap.innerHTML = `
+                <div class="w-8 h-8 rounded-lg bg-emerald-950 border border-emerald-800 flex items-center justify-center shrink-0">
+                    <i class="fa-solid fa-star text-emerald-400 text-xs"></i>
+                </div>
+                <div class="stellar-reply bg-slate-900/70 border border-emerald-900/40 rounded-xl rounded-tl-sm px-4 py-3 text-xs text-slate-200 leading-relaxed max-w-[90%] whitespace-pre-wrap typing-cursor"></div>
+            `;
+            document.getElementById('chat-messages').appendChild(wrap);
+            scrollChatToBottom();
+            return wrap.querySelector('.stellar-reply');
+        }
+
+        function escapeHtml(str) {
+            return str
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        async function typeOutMessage(element, text, speed = 16) {
+            element.textContent = '';
+            element.classList.add('typing-cursor');
+            for (let i = 0; i < text.length; i++) {
+                element.textContent += text[i];
+                if (i % 3 === 0) scrollChatToBottom();
+                await new Promise((resolve) => setTimeout(resolve, speed));
+            }
+            element.classList.remove('typing-cursor');
+            scrollChatToBottom();
+        }
+
+        function setChatBusy(busy) {
+            isChatBusy = busy;
+            document.getElementById('scan-btn').disabled = busy;
+            document.getElementById('chat-send-btn').disabled = busy;
+            document.getElementById('chat-input').disabled = busy;
+        }
+
+        async function sendToDify({ query, displayText, code = null, mode = null }) {
+            if (!query || !query.trim() || isChatBusy) return;
+
+            setChatBusy(true);
+            const scanStatus = document.getElementById('scan-status');
+            const btnLabel = document.getElementById('scan-btn-label');
+            const btnIcon = document.getElementById('scan-btn-icon');
+
+            appendUserMessage(displayText);
+            const stellarEl = appendStellarMessageShell();
+            stellarEl.textContent = 'STELLAR が診断中';
+            const statusParts = [];
+            if (code) statusParts.push(`code: ${code}`);
+            if (mode) statusParts.push(`mode: ${mode}`);
+            scanStatus.textContent = statusParts.length > 0
+                ? `Dify API に問い合わせ中... (${statusParts.join(' / ')})`
+                : 'Dify API に問い合わせ中...';
+            btnLabel.textContent = '診断中...';
+            btnIcon.className = 'fa-solid fa-spinner fa-spin text-xs';
+
+            const payload = {
+                query,
+                conversation_id: conversationId,
+            };
+            if (code) payload.code = code;
+            if (mode) payload.mode = mode;
+
+            try {
+                const response = await fetch('/api/dify/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    const detail = typeof data.detail === 'string'
+                        ? data.detail
+                        : JSON.stringify(data.detail || data);
+                    throw new Error(detail || `サーバーエラー (${response.status})`);
+                }
+
+                conversationId = data.conversation_id || conversationId;
+                const answer = data.answer || '（応答が空でした）';
+                await typeOutMessage(stellarEl, answer);
+                scanStatus.textContent = 'STELLAR 診断が完了しました。';
+            } catch (error) {
+                stellarEl.classList.remove('typing-cursor');
+                stellarEl.textContent = `エラー: ${error.message}`;
+                stellarEl.classList.add('text-pink-400');
+                scanStatus.textContent = `診断失敗: ${error.message}`;
+            } finally {
+                setChatBusy(false);
+                btnLabel.textContent = 'STELLAR に診断依頼';
+                btnIcon.className = 'fa-solid fa-robot text-xs';
+            }
+        }
+
+        async function startMarketScan() {
+            const request = buildDifyRequest(null, {
+                useWatchlist: true,
+                mode: selectedRiskMode,
+            });
+            if (!request) {
+                setWatchlistFeedback('診断する銘柄をウォッチリストに追加してください。', true);
+                return;
+            }
+            await sendToDify(request);
+        }
+
+        async function sendChatMessage() {
+            const input = document.getElementById('chat-input');
+            const query = input.value.trim();
+            if (!query) return;
+            input.value = '';
+
+            const request = buildDifyRequest(query);
+            if (!request) {
+                if (RISK_MODES.includes(query) && watchlistTickers.length === 0) {
+                    setWatchlistFeedback('モード診断にはウォッチリストに銘柄を追加してください。', true);
+                } else {
+                    setWatchlistFeedback('4桁の銘柄コードを入力してください（例: 7203）', true);
+                }
+                return;
+            }
+            await sendToDify(request);
+        }
+
+        async function loadDifyStatus() {
+            const badge = document.getElementById('dify-status-badge');
+            try {
+                const status = await fetch('/api/dify/status').then((r) => r.json());
+                if (status.configured) {
+                    badge.textContent = 'Dify 接続可';
+                    badge.className = 'text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-bold mono-font';
+                } else {
+                    badge.textContent = 'APIキー未設定';
+                    badge.className = 'text-[9px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded font-bold mono-font';
+                }
+            } catch (_) {
+                badge.textContent = '接続不明';
+            }
+        }
+
+        function changeStrategy(type) {
+            const oshime = document.getElementById('strat-oshime');
+            const junbari = document.getElementById('strat-junbari');
+            const slider = document.getElementById('rsi-slider');
+            const valDisplay = document.getElementById('rsi-val');
+
+            if (type === 'oshime') {
+                oshime.className = "neon-card rounded-xl p-5 text-left transition-all duration-300 border border-emerald-500/50 bg-gradient-to-br from-emerald-950/20 to-transparent shadow-[0_0_15px_rgba(16,185,129,0.1)] focus:outline-none cursor-pointer";
+                oshime.querySelector('span').className = "text-emerald-400 font-bold tracking-wide text-sm mono-font";
+                oshime.querySelector('i').className = "fa-solid fa-chart-line text-emerald-400 text-sm";
+
+                junbari.className = "neon-card rounded-xl p-5 text-left transition-all duration-300 border border-slate-800/80 opacity-60 focus:outline-none cursor-pointer hover:opacity-90";
+                junbari.querySelector('span').className = "text-slate-400 font-bold tracking-wide text-sm mono-font";
+                junbari.querySelector('i').className = "fa-solid fa-bolt text-slate-500 text-sm";
+
+                slider.value = 23;
+                valDisplay.innerText = "23";
+            } else {
+                junbari.className = "neon-card rounded-xl p-5 text-left transition-all duration-300 border border-emerald-500/50 bg-gradient-to-br from-emerald-950/20 to-transparent shadow-[0_0_15px_rgba(16,185,129,0.1)] focus:outline-none cursor-pointer";
+                junbari.querySelector('span').className = "text-emerald-400 font-bold tracking-wide text-sm mono-font";
+                junbari.querySelector('i').className = "fa-solid fa-bolt text-emerald-400 text-sm";
+
+                oshime.className = "neon-card rounded-xl p-5 text-left transition-all duration-300 border border-slate-800/80 opacity-60 focus:outline-none cursor-pointer hover:opacity-90";
+                oshime.querySelector('span').className = "text-slate-400 font-bold tracking-wide text-sm mono-font";
+                oshime.querySelector('i').className = "fa-solid fa-chart-line text-slate-500 text-sm";
+
+                slider.value = 60;
+                valDisplay.innerText = "52 - 60";
+            }
+        }
+
+        async function loadNextScanTime() {
+            try {
+                const health = await fetch('/health').then((r) => r.json());
+                if (health.next_scan_time) {
+                    const dt = new Date(health.next_scan_time);
+                    const jst = dt.toLocaleString('ja-JP', {
+                        timeZone: 'Asia/Tokyo',
+                        month: 'numeric',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                    });
+                    document.getElementById('next-scan-label').textContent =
+                        `次回自動スキャン: ${jst} JST`;
+                }
+            } catch (_) {
+                document.getElementById('next-scan-label').textContent = '次回自動スキャン: 未取得';
+            }
+        }
+
+        selectRiskMode('堅実');
+        loadWatchlist();
+        loadNextScanTime();
+        loadDifyStatus();
+    </script>
 </body>
+
 </html>

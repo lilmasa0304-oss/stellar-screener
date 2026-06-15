@@ -1,10 +1,6 @@
 tickers:
-  - 1306.T
-  - 7203.T
-  - 6758.T
-  - 9984.T
-  - 8306.T
-
+- 1605.T
+- 7203.T
 strategies:
   rsi:
     enabled: true
@@ -31,26 +27,15 @@ strategies:
     require_lower_band_touch: false
   composite_entry:
     enabled: true
-
-# ─────────────────────────────────────────────────────────────────────────
-# 中期スイング BUY SIGNAL 判定条件
-# 以下の3条件をすべて満たした銘柄に [BUY SIGNAL] を点灯させ LINE に通知する
-#   条件① 25日SMAが上向き（前日比上昇）
-#   条件② RSI(14) が rsi_min〜rsi_max の低値圏反発帯
-#   条件③ MACD がゴールデンクロス、またはその直前（ヒスト収束中）
-# ─────────────────────────────────────────────────────────────────────────
 swing_signal:
   rsi_min: 35.0
   rsi_max: 45.0
   require_ma25_uptrend: true
   require_macd_cross: true
-
 settings:
   delay_seconds: 1.0
   history_period: 6mo
-  # スケジューラー設定（APScheduler）
-  # 毎平日 16:00 JST = 07:00 UTC に自動スキャンを実行
   scheduler:
-    hour: 7       # UTC 時
+    hour: 7
     minute: 0
     timezone: UTC
