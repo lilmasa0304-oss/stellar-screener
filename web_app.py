@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 import requests
 import yaml
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -49,19 +49,24 @@ load_dotenv()
 DIFY_API_KEY  = os.getenv("DIFY_API_KEY", "")
 DIFY_BASE_URL = os.getenv("DIFY_BASE_URL", "https://api.dify.ai/v1").rstrip("/")
 
-# ── JPX400 スキャン進捗（インメモリ、セッションIDで DB と紐付け） ─────────────
+# ── JPX400 リアルタイムスキャン（インメモリ・直近結果キャッシュ） ─────────────
 _jpx400_progress: Dict[str, Any] = {
     "status":    "idle",   # idle | running | completed | failed
     "scan_id":   None,
+    "mode":      None,
     "processed": 0,
     "total":     0,
     "buy_count": 0,
+    "buy_signals": [],
     "error":     None,
+    "elapsed_seconds": None,
 }
 
 
 # ── FastAPI lifespan（起動/終了フック） ───────────────────────────────────
 IS_VERCEL = os.getenv("VERCEL") == "1"
+IS_RENDER = os.getenv("RENDER") == "true"
+DISABLE_SCHEDULER = os.getenv("DISABLE_SCHEDULER", "0").lower() in ("1", "true", "yes")
 
 
 @asynccontextmanager
@@ -70,14 +75,17 @@ async def lifespan(app: FastAPI):
     storage.init_db()
     logger.info("SQLite DB を初期化しました。")
 
-    # Vercel サーバーレスでは常駐スケジューラーを動かさない
-    if not IS_VERCEL:
+    # Vercel サーバーレス / DISABLE_SCHEDULER=1 では常駐スケジューラーを動かさない
+    if not IS_VERCEL and not DISABLE_SCHEDULER:
         start_scheduler(hour=7, minute=0, timezone="UTC")
+        logger.info("定時スキャンスケジューラーを起動しました（平日 16:00 JST）。")
+    elif DISABLE_SCHEDULER:
+        logger.info("DISABLE_SCHEDULER=1 のためスケジューラーは無効です。")
 
     yield
 
     # 終了時
-    if not IS_VERCEL:
+    if not IS_VERCEL and not DISABLE_SCHEDULER:
         stop_scheduler()
 
 
@@ -168,6 +176,10 @@ class WatchlistPayload(BaseModel):
     tickers: List[str] = Field(default_factory=list, description="ウォッチリスト銘柄コード一覧")
 
 
+class MarketScanPayload(BaseModel):
+    mode: Optional[str] = Field("堅実", description="リスクモード（堅実 / 標準 / 積極）")
+
+
 class DifyChatPayload(BaseModel):
     query:            str = Field(..., description="Dify へ送るユーザー入力（銘柄コードのみ。例: 7203 / 1605,7203）")
     code:             Optional[str] = Field(
@@ -181,9 +193,10 @@ class DifyChatPayload(BaseModel):
     conversation_id:  Optional[str] = Field(None, description="会話を継続する場合の ID")
 
 
-# 並列リクエスト上限（Yahoo Finance API 制限対策）
-MAX_CONCURRENT_REQUESTS = 30
+# 並列リクエスト上限（Yahoo Finance API 制限対策・Vercel 向けに最適化）
+MAX_CONCURRENT_REQUESTS = 40
 _scan_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+_scan_lock = asyncio.Lock()
 
 # リスク許容度ごとの StrategyEvaluator 閾値マッピング
 RISK_MODES: Dict[str, Dict[str, float]] = {
@@ -253,27 +266,17 @@ def update_config(payload: UpdateConfigPayload):
         raise HTTPException(status_code=500, detail=f"設定の保存に失敗: {e}")
 
 
-# ── ウォッチリスト API ────────────────────────────────────────────────────
+# ── ウォッチリスト API（後方互換: フロントは localStorage を使用） ───────
 @app.get("/api/watchlist")
 def get_watchlist():
-    """ウォッチリスト銘柄一覧を返す。"""
-    try:
-        cfg = read_config_yaml()
-        return {"tickers": cfg.get("tickers", [])}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ウォッチリストの取得に失敗: {e}")
+    """ウォッチリスト銘柄一覧を返す（配布版は常に空。各ユーザーの保存はブラウザ側）。"""
+    return {"tickers": []}
 
 
 @app.put("/api/watchlist")
 def update_watchlist(payload: WatchlistPayload):
-    """ウォッチリスト銘柄一覧を config.yaml に保存する。"""
-    try:
-        current = read_config_yaml()
-        current["tickers"] = payload.tickers
-        write_config_yaml(current)
-        return {"status": "success", "tickers": payload.tickers}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ウォッチリストの保存に失敗: {e}")
+    """後方互換用。サーバー側には保存しない。"""
+    return {"status": "success", "tickers": payload.tickers}
 
 
 @app.get("/api/stocks")
@@ -385,129 +388,191 @@ def run_screener():
         raise HTTPException(status_code=500, detail=f"スクリーニング実行に失敗: {e}")
 
 
-# ── JPX400 バックグラウンドスキャン ──────────────────────────────────────
+# ── JPX400 リアルタイムスキャン（Vercel 完結型） ─────────────────────────
 
-def _do_jpx400_scan(scan_id: str):
+def _signal_label(preset_matched: Optional[str]) -> str:
+    if preset_matched == "oshieme":
+        return "押し目シグナル"
+    if preset_matched == "junbari":
+        return "順張りブレイク"
+    return "シグナル"
+
+
+def _enrich_scan_result(ev: Dict[str, Any]) -> Dict[str, Any]:
+    """スキャン結果を DB 保存・API 返却用に正規化する。"""
+    preset = ev.get("preset_matched", "none")
+    ev["current_price"] = ev.get("current_price") or ev.get("close_price")
+    ev["signals"] = [{
+        "preset_matched": preset,
+        "signal_label":   _signal_label(preset),
+        "reason":         ev.get("reason", ""),
+    }]
+    return ev
+
+
+def _decorate_buy_signal_rows(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """DB から読んだ buy_signals に preset / reason を付与する。"""
+    decorated: List[Dict[str, Any]] = []
+    for row in results:
+        item = dict(row)
+        meta = (item.get("signals") or [{}])[0] if item.get("signals") else {}
+        preset = meta.get("preset_matched", "none")
+        item["preset_matched"] = preset
+        item["signal_label"] = meta.get("signal_label") or _signal_label(preset)
+        item["reason"] = meta.get("reason", "")
+        decorated.append(item)
+    return decorated
+
+
+async def _execute_jpx400_realtime_scan(selected_mode: str = "堅実") -> Dict[str, Any]:
     """
-    JPX400 全銘柄をバックグラウンドでスキャンし、結果を SQLite に保存する。
-    BUY SIGNAL が出た銘柄は LINE に通知する。
+    JPX400（約400銘柄）を非同期並列スクリーニングし、結果を即時返却する。
+    Vercel 上でボタン押下 → 同一リクエストで完結する想定。
     """
+    import time
+    from datetime import datetime
     from screener.jpx400 import get_jpx400_tickers
 
-    global _jpx400_progress
-
+    safe_mode = selected_mode if selected_mode in RISK_MODES else "堅実"
+    mode_config = RISK_MODES[safe_mode]
     tickers = get_jpx400_tickers()
+    total = len(tickers)
+
+    scan_id = (
+        f"jpx400_{safe_mode}_"
+        f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_"
+        f"{uuid.uuid4().hex[:6]}"
+    )
+
+    global _jpx400_progress
     _jpx400_progress.update({
-        "status":    "running",
-        "scan_id":   scan_id,
-        "processed": 0,
-        "total":     len(tickers),
-        "buy_count": 0,
-        "error":     None,
+        "status":          "running",
+        "scan_id":         scan_id,
+        "mode":            safe_mode,
+        "processed":       0,
+        "total":           total,
+        "buy_count":       0,
+        "buy_signals":     [],
+        "error":           None,
+        "elapsed_seconds": None,
     })
-    storage.create_session(scan_id=scan_id, scan_type="manual", total_tickers=len(tickers))
 
-    try:
-        config    = Config("config.yaml")
-        fetcher   = DataFetcher(delay_seconds=0.5, history_period="6mo")
-        evaluator = StrategyEvaluator(config.data)
-        buy_signals = []
+    storage.create_session(
+        scan_id=scan_id,
+        scan_type=f"jpx400_{safe_mode}",
+        total_tickers=total,
+    )
 
-        for i, ticker in enumerate(tickers):
-            try:
-                df, name = fetcher.fetch_ticker_data(ticker)
-                if df is None or df.empty:
-                    _jpx400_progress["processed"] = i + 1
-                    continue
+    started = time.monotonic()
+    config = read_config_yaml()
+    fetcher = DataFetcher(delay_seconds=0, history_period="6mo")
+    evaluator = StrategyEvaluator(config)
 
-                ev = evaluator.evaluate(ticker, name or ticker, df)
+    tasks = [
+        _fetch_and_evaluate_single_stock(ticker, mode_config, evaluator, fetcher)
+        for ticker in tickers
+    ]
+    results = await asyncio.gather(*tasks)
 
-                for k in ("current_price", "change_percent", "rsi",
-                          "ma5", "ma25", "ma75", "bb_upper", "bb_lower",
-                          "ma25_deviation_pct", "macd", "macd_signal", "macd_hist"):
-                    if ev.get(k) is not None:
-                        ev[k] = float(ev[k])
+    buy_signals: List[Dict[str, Any]] = []
+    for stock in results:
+        if stock is None:
+            continue
+        ev = dict(stock["metrics"])
+        ev["ticker"] = stock["ticker"]
+        ev["name"] = stock["name"]
+        ev = _enrich_scan_result(ev)
+        for k in ("current_price", "rsi"):
+            if ev.get(k) is not None:
+                ev[k] = float(ev[k])
+        storage.save_result(scan_id, ev)
+        buy_signals.append(ev)
 
-                storage.save_result(scan_id, ev)
+    elapsed = round(time.monotonic() - started, 2)
+    decorated = _decorate_buy_signal_rows(buy_signals)
 
-                if ev["buy_signal"]:
-                    buy_signals.append(ev)
-                    _jpx400_progress["buy_count"] = len(buy_signals)
+    sent_line = False
+    if buy_signals:
+        try:
+            cfg = Config("config.yaml")
+            if cfg.validate_line_credentials():
+                notifier = LineNotifier(cfg.line_token, cfg.line_user_id)
+                message = notifier.build_buy_signal_message(buy_signals)
+                sent_line = notifier.send_notification(message)
+        except Exception as line_err:
+            logger.warning(f"LINE 通知スキップ: {line_err}")
 
-            except Exception as e:
-                logger.error(f"[JPX400 scan] {ticker} エラー: {e}")
+    storage.complete_session(
+        scan_id=scan_id,
+        buy_signal_count=len(buy_signals),
+        sent_line=sent_line,
+    )
 
-            _jpx400_progress["processed"] = i + 1
-            if (i + 1) % 20 == 0:
-                storage.update_session_progress(scan_id, i + 1)
-
-        # LINE 通知
-        sent_line = False
-        if buy_signals and config.validate_line_credentials():
-            notifier  = LineNotifier(config.line_token, config.line_user_id)
-            message   = notifier.build_buy_signal_message(buy_signals)
-            sent_line = notifier.send_notification(message)
-
-        storage.complete_session(
-            scan_id=scan_id,
-            buy_signal_count=len(buy_signals),
-            sent_line=sent_line,
-        )
-        _jpx400_progress["status"] = "completed"
-        logger.info(
-            f"[JPX400 scan] 完了: BUY SIGNAL {len(buy_signals)}件 / "
-            f"{len(tickers)}銘柄処理"
-        )
-
-    except Exception as e:
-        logger.exception(f"[JPX400 scan] 致命的エラー: {e}")
-        storage.complete_session(
-            scan_id=scan_id,
-            buy_signal_count=0,
-            sent_line=False,
-            error_message=str(e),
-        )
-        _jpx400_progress.update({"status": "failed", "error": str(e)})
+    payload = {
+        "status":          "completed",
+        "scan_id":         scan_id,
+        "mode":            safe_mode,
+        "total":           total,
+        "total_tickers":   total,
+        "processed":       total,
+        "buy_count":       len(buy_signals),
+        "buy_signals":     decorated,
+        "elapsed_seconds": elapsed,
+        "sent_line":       sent_line,
+        "message":         (
+            f"【{safe_mode}】JPX400 スキャン完了: "
+            f"BUY SIGNAL {len(buy_signals)} 件 / {total} 銘柄（{elapsed}秒）"
+        ),
+    }
+    _jpx400_progress.update(payload)
+    logger.info(payload["message"])
+    return payload
 
 
 @app.post("/api/jpx400/scan")
-def start_jpx400_scan(background_tasks: BackgroundTasks):
-    """JPX400 全銘柄のバックグラウンドスキャンを開始する。"""
-    if _jpx400_progress["status"] == "running":
+async def start_jpx400_scan(payload: MarketScanPayload):
+    """JPX400 約400銘柄をリアルタイム並列スキャンし、結果を同一レスポンスで返す。"""
+    if _scan_lock.locked():
         raise HTTPException(
             status_code=409,
-            detail=f"スキャンがすでに実行中です。"
-                   f"（{_jpx400_progress['processed']}/{_jpx400_progress['total']} 処理済み）",
+            detail=(
+                f"スキャンがすでに実行中です。"
+                f"（{_jpx400_progress.get('processed', 0)}/"
+                f"{_jpx400_progress.get('total', 0)} 処理済み）"
+            ),
         )
-    from screener.jpx400 import get_jpx400_count
-    scan_id = f"manual_{__import__('datetime').datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    background_tasks.add_task(_do_jpx400_scan, scan_id)
-    return {
-        "status":  "started",
-        "scan_id": scan_id,
-        "total_tickers": get_jpx400_count(),
-        "message": "JPX400 スキャンをバックグラウンドで開始しました。",
-    }
+
+    safe_mode = payload.mode if payload.mode in RISK_MODES else "堅実"
+    try:
+        async with _scan_lock:
+            return await _execute_jpx400_realtime_scan(safe_mode)
+    except Exception as e:
+        logger.exception(f"[JPX400 scan] 致命的エラー: {e}")
+        _jpx400_progress.update({"status": "failed", "error": str(e)})
+        raise HTTPException(status_code=500, detail=f"JPX400 スキャンに失敗: {e}")
+
+
+@app.post("/api/market/scan")
+async def start_market_scan(payload: MarketScanPayload):
+    """後方互換: JPX400 リアルタイムスキャンへ委譲。"""
+    return await start_jpx400_scan(payload)
 
 
 @app.get("/api/jpx400/status")
 def get_jpx400_status():
-    """現在のJPX400スキャン進捗と最新結果を返す。"""
-    prog  = dict(_jpx400_progress)
+    """直近の JPX400 スキャン結果（インメモリキャッシュ）を返す。"""
+    return get_market_scan_status()
+
+
+@app.get("/api/market/status")
+def get_market_scan_status():
+    """直近の JPX400 スキャン結果を返す（後方互換エンドポイント）。"""
+    prog = dict(_jpx400_progress)
     scan_id = prog.get("scan_id")
-
-    results     = []
-    session_info = None
-
-    if scan_id:
-        session_info = storage.get_session(scan_id)
-        if prog["status"] == "completed":
-            results = storage.get_results(scan_id, buy_signal_only=True)
-
+    session_info = storage.get_session(scan_id) if scan_id else None
     return {
         **prog,
-        "session":       session_info,
-        "buy_signals":   results,
+        "session":        session_info,
         "next_scan_time": get_next_run_time(),
     }
 
@@ -659,41 +724,35 @@ async def _fetch_and_evaluate_single_stock(
 
 
 async def _execute_bulk_screener(selected_mode: str) -> Dict[str, Any]:
-    """JPX400 銘柄を非同期並列でスクリーニングする。"""
-    from screener.jpx400 import get_jpx400_tickers
-
-    mode_config = RISK_MODES.get(selected_mode, RISK_MODES["堅実"])
-    logger.info(
-        f"【Stellar Screener V3.0】リスク許容度【{selected_mode}】モードで日本株スキャンを開始します。"
-    )
-
-    config = read_config_yaml()
-    fetcher = DataFetcher(delay_seconds=0.2, history_period="6mo")
-    evaluator = StrategyEvaluator(config)
-    all_tickers = get_jpx400_tickers()
-
-    tasks = [
-        _fetch_and_evaluate_single_stock(ticker, mode_config, evaluator, fetcher)
-        for ticker in all_tickers
-    ]
-    results = await asyncio.gather(*tasks)
-    screened_stocks = [stock for stock in results if stock is not None]
-
-    if not screened_stocks:
+    """JPX400 銘柄を非同期並列でスクリーニングする（/api/v1/screen 用）。"""
+    result = await _execute_jpx400_realtime_scan(selected_mode)
+    buy_signals = result.get("buy_signals") or []
+    if not buy_signals:
         return {
             "status": "NO_TRADE",
+            "mode": result.get("mode", selected_mode),
             "message": (
                 f"本日、{selected_mode}モードの超厳格基準を突破できた銘柄は0件でした。"
                 "完璧な資本防衛が遂行されました。"
             ),
             "stocks": [],
+            "count": 0,
         }
-
+    stocks = [
+        {
+            "ticker": row.get("ticker"),
+            "name": row.get("name"),
+            "metrics": row,
+            "trend_status": _derive_trend_status(row),
+        }
+        for row in buy_signals
+    ]
     return {
         "status": "SUCCESS",
-        "mode": selected_mode,
-        "count": len(screened_stocks),
-        "stocks": screened_stocks,
+        "mode": result.get("mode", selected_mode),
+        "count": len(stocks),
+        "stocks": stocks,
+        "elapsed_seconds": result.get("elapsed_seconds"),
     }
 
 
@@ -1148,10 +1207,16 @@ def dify_status():
 @app.get("/health")
 def health_check():
     """Render / UptimeRobot 等のヘルスチェック用。"""
+    cfg = Config("config.yaml")
     return {
-        "status":         "ok",
-        "next_scan_time": get_next_run_time(),
-        "db_path":        str(storage.DB_PATH.resolve()),
+        "status":          "ok",
+        "platform":        "render" if IS_RENDER else ("vercel" if IS_VERCEL else "local"),
+        "line_connected":  cfg.validate_line_credentials(),
+        "ticker_count":    len(cfg.tickers),
+        "universe":        cfg.universe or "custom",
+        "scheduler":       "disabled" if DISABLE_SCHEDULER else "active",
+        "next_scan_time":  None if DISABLE_SCHEDULER else get_next_run_time(),
+        "db_path":         str(storage.DB_PATH.resolve()),
     }
 
 

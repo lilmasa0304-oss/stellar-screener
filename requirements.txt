@@ -1,16 +1,26 @@
-# 既存依存
-yfinance>=0.2.38
-pandas>=2.0.0
-pyyaml>=6.0.1
-python-dotenv>=1.0.1
-requests>=2.31.0
+# STELLAR SCREENER — Python 3.11 (Render: runtime.txt 参照)
+
+# Web API
 fastapi>=0.110.0
 uvicorn[standard]>=0.28.0
 pydantic>=2.0.0
 
-# 定時スケジューラー
+# データ取得・分析
+yfinance>=0.2.38
+pandas>=2.0.0
+numpy>=1.26.0
+
+# 設定・ユーティリティ
+pyyaml>=6.0.1
+python-dotenv>=1.0.1
+requests>=2.31.0
+
+# 定時スキャン（Render / ローカル常駐用）
 APScheduler>=3.10.4
 pytz>=2024.1
 
-# Vercel サーバーレス用（ASGI アダプター）
+# JPX400 PDF 動的取得（任意・未使用時も import エラーにならない）
+pypdf>=4.0.0
+
+# Vercel サーバーレス用（Render では未使用だが共存可）
 mangum>=0.17.0

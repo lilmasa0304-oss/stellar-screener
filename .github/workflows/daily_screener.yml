@@ -70,6 +70,7 @@ jobs:
             echo "ドライランモードで実行します（LINE通知なし）"
             python main.py --dry-run
           else
+            echo "本番モードで実行します（BUY SIGNAL 時に LINE 通知）"
             python main.py
           fi
 

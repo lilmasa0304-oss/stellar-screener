@@ -1,6 +1,10 @@
 # SQLite DB（GitHubにはプッシュしない）
 data/
 
+# 作業用・一時ファイル
+all_code.txt
+jpx400_codes_temp.txt
+
 # 仮想環境
 venv/
 .venv/

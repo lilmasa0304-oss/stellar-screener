@@ -1,32 +1,51 @@
-# Render.com デプロイ設定
-# ドキュメント: https://render.com/docs/yaml-spec
+# Render.com Blueprint — STELLAR SCREENER
+# https://render.com/docs/blueprint-spec
 #
-# 使い方:
+# デプロイ手順:
 #   1. GitHub にプッシュ
-#   2. Render.com で "New Web Service" → GitHub リポジトリを選択
-#   3. 環境変数（LINE_CHANNEL_ACCESS_TOKEN, LINE_USER_ID）を Render の
-#      "Environment" タブで設定
-#   4. Deploy ボタンを押す
+#   2. Render Dashboard → New → Blueprint → このリポジトリを選択
+#      または New → Web Service → GitHub リポジトリを選択（設定は下記参照）
+#   3. Environment タブで sync:false の機密変数を手動入力
+#   4. Deploy
+#
+# 無料プラン注意:
+#   - 15分間アクセスがないとスリープします（UptimeRobot 等での定期 ping 推奨）
+#   - SQLite は再起動・再デプロイでリセットされます（永続化は有料 Disk が必要）
 
 services:
   - type: web
     name: stellar-screener
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    plan: free
+    region: singapore
+    branch: main
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: uvicorn web_app:app --host 0.0.0.0 --port $PORT
-    plan: free          # 無料プランで動作（スリープあり → UptimeRobot で対策）
     healthCheckPath: /health
 
     envVars:
-      - key: LINE_CHANNEL_ACCESS_TOKEN
-        sync: false       # Render の UI から手動設定
-      - key: LINE_USER_ID
-        sync: false       # Render の UI から手動設定
-      - key: DB_PATH
-        value: /opt/render/project/data/screener.db  # 永続ディスクにマウント
+      # Python / 文字コード（runtime.txt と併用可）
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: PYTHONUTF8
+        value: "1"
+      - key: PYTHONIOENCODING
+        value: "utf-8"
 
-    # 永続ディスク（有料プランのみ。無料プランでは data/ がリセットされます）
-    # disk:
-    #   name: screener-data
-    #   mountPath: /opt/render/project/data
-    #   sizeGB: 1
+      # SQLite（無料プラン: エフェメラル。再起動で消えます）
+      - key: DB_PATH
+        value: data/screener.db
+
+      # 定時スキャン: GitHub Actions 運用時は "1" にして Render 側スケジューラーを無効化
+      - key: DISABLE_SCHEDULER
+        value: "0"
+
+      # --- 以下は Render UI から手動設定（sync: false）---
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: LINE_USER_ID
+        sync: false
+      - key: DIFY_API_KEY
+        sync: false
+      - key: DIFY_BASE_URL
+        value: https://api.dify.ai/v1

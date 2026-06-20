@@ -83,7 +83,7 @@
                     STELLAR SCREENER
                 </h1>
                 <p class="text-xs text-cyan-400 font-semibold tracking-wide mt-1">
-                    プレミアム流動性アルファ // 全市場・高流動性マトリクス監査システム
+                    JPX日経400 // リアルタイム・スクリーニング・ターミナル
                 </p>
             </div>
             <div class="flex items-center gap-3 text-xs bg-slate-900/60 px-4 py-2.5 rounded-xl border border-slate-800">
@@ -227,12 +227,12 @@
                         </div>
                     </div>
 
-                    <button id="scan-btn" onclick="startMarketScan()"
+                    <button id="scan-btn" onclick="startJpx400Scan()"
                         class="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-400 text-slate-900 font-extrabold py-3.5 px-4 rounded-xl shadow-[0_4px_15px_rgba(16,185,129,0.25)] transition-all duration-200 text-xs tracking-wider flex items-center justify-center gap-2 cursor-pointer border-t border-emerald-400/20 disabled:cursor-not-allowed">
-                        <i class="fa-solid fa-robot text-xs" id="scan-btn-icon"></i>
-                        <span id="scan-btn-label">STELLAR に診断依頼</span>
+                        <i class="fa-solid fa-radar text-xs" id="scan-btn-icon"></i>
+                        <span id="scan-btn-label">JPX400 スキャン開始</span>
                     </button>
-                    <p class="text-[10px] text-slate-500 leading-relaxed" id="scan-status">モードを選び、Dify 経由で STELLAR 診断を開始します。</p>
+                    <p class="text-[10px] text-slate-500 leading-relaxed" id="scan-status">JPX日経インデックス400（約400銘柄）をリアルタイムスキャンし、押し目・順張りブレイクを検出します。</p>
                 </div>
 
                 <div class="neon-card rounded-2xl p-6 space-y-4">
@@ -271,6 +271,24 @@
             </div>
         </div>
 
+        <div id="market-scan-panel" class="neon-card rounded-2xl p-6 space-y-4 border-t border-t-emerald-500/20">
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                <h2 class="text-sm font-bold text-emerald-400 flex items-center gap-2">
+                    <i class="fa-solid fa-bullseye"></i> JPX400 スキャン結果
+                </h2>
+                <span id="scan-progress-label" class="text-[10px] text-slate-500 mono-font">待機中</span>
+            </div>
+            <div id="scan-progress-bar-wrap" class="hidden h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+                <div id="scan-progress-bar" class="h-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all duration-300" style="width:0%"></div>
+            </div>
+            <div id="scan-hits-empty"
+                class="text-[11px] text-slate-500 text-center py-6 px-4 rounded-xl border border-dashed border-slate-800/80 bg-slate-900/20 leading-relaxed">
+                リスクモードを選んで「JPX400 スキャン開始」を押してください。<br>
+                約400銘柄から <span class="text-emerald-400">押し目</span> / <span class="text-cyan-400">順張りブレイク</span> をリアルタイム検出し、各行から Dify AI 診断ができます。
+            </div>
+            <div id="scan-hits-list" class="hidden space-y-2 max-h-[360px] overflow-y-auto chat-scroll"></div>
+        </div>
+
         <div id="chat-container"
             class="neon-card rounded-2xl p-6 border-t border-t-cyan-500/30 bg-gradient-to-b from-cyan-950/5 to-transparent space-y-4">
             <div class="flex justify-between items-center border-b border-slate-800 pb-3">
@@ -288,7 +306,7 @@
                         <i class="fa-solid fa-star text-emerald-400 text-xs"></i>
                     </div>
                     <div class="bg-slate-900/70 border border-slate-800 rounded-xl rounded-tl-sm px-4 py-3 text-xs text-slate-300 leading-relaxed max-w-[90%]">
-                        STELLAR SCREENER へようこそ。リスクモード（堅実・標準・積極）を選んで「STELLAR に診断依頼」を押すか、下の入力欄から直接メッセージを送ってください。
+                        STELLAR SCREENER へようこそ。「JPX400 スキャン開始」でシグナル銘柄をリアルタイム検索し、ヒット行の「AI診断」から Dify 診断ができます。ウォッチリストはこのブラウザにだけ保存されます。
                     </div>
                 </div>
             </div>
@@ -310,8 +328,10 @@
         let selectedRiskMode = '堅実';
         let conversationId = null;
         let isChatBusy = false;
+        let isScanRunning = false;
         let watchlistTickers = [];
         const RISK_MODES = ['堅実', '標準', '積極'];
+        const WATCHLIST_STORAGE_KEY = 'stellar_watchlist_v1';
 
         function extractStockCode(raw) {
             const trimmed = (raw || '').trim();
@@ -407,6 +427,11 @@
                     'watchlist-badge bg-cyan-950/60 border border-cyan-800/50 text-cyan-400 px-2.5 py-1.5 rounded-lg flex items-center gap-2';
                 badge.innerHTML = `
                     <span>${escapeHtml(ticker)}</span>
+                    <button type="button" onclick="diagnoseWatchlistTicker('${ticker}')"
+                        class="text-cyan-500/80 hover:text-cyan-300 text-[10px] font-bold px-1"
+                        aria-label="${ticker} を AI 診断">
+                        AI
+                    </button>
                     <button type="button" onclick="removeWatchlistTicker('${ticker}')"
                         class="watchlist-remove text-pink-500/80 hover:text-pink-400 leading-none"
                         aria-label="${ticker} を削除">
@@ -418,29 +443,23 @@
         }
 
         async function saveWatchlist() {
-            const response = await fetch('/api/watchlist', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tickers: watchlistTickers }),
-            });
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                throw new Error(data.detail || `保存に失敗しました (${response.status})`);
-            }
-            watchlistTickers = data.tickers || watchlistTickers;
+            persistWatchlistToStorage();
             renderWatchlist();
         }
 
-        async function loadWatchlist() {
+        function loadWatchlist() {
             try {
-                const data = await fetch('/api/watchlist').then((r) => r.json());
-                watchlistTickers = Array.isArray(data.tickers) ? data.tickers : [];
-                renderWatchlist();
+                const raw = localStorage.getItem(WATCHLIST_STORAGE_KEY);
+                const parsed = raw ? JSON.parse(raw) : [];
+                watchlistTickers = Array.isArray(parsed) ? parsed : [];
             } catch (_) {
                 watchlistTickers = [];
-                renderWatchlist();
-                setWatchlistFeedback('ウォッチリストの読み込みに失敗しました。', true);
             }
+            renderWatchlist();
+        }
+
+        function persistWatchlistToStorage() {
+            localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(watchlistTickers));
         }
 
         async function addWatchlistTicker() {
@@ -501,7 +520,146 @@
                 btn.classList.toggle('text-slate-300', !isActive);
             });
             document.getElementById('scan-status').textContent =
-                `選択中: 【${mode}】モード。Dify 経由で STELLAR に診断を依頼します。`;
+                `選択中: 【${mode}】モード。JPX400（約400銘柄）リアルタイムスキャンに適用されます。`;
+        }
+
+        function setScanBusy(busy) {
+            isScanRunning = busy;
+            document.getElementById('scan-btn').disabled = busy || isChatBusy;
+        }
+
+        function formatRsi(value) {
+            if (value == null || Number.isNaN(Number(value))) return '—';
+            return Number(value).toFixed(2);
+        }
+
+        function signalBadgeClass(preset) {
+            if (preset === 'oshieme') return 'bg-emerald-950/60 text-emerald-400 border-emerald-800/50';
+            if (preset === 'junbari') return 'bg-cyan-950/60 text-cyan-400 border-cyan-800/50';
+            return 'bg-slate-900 text-slate-400 border-slate-700';
+        }
+
+        function updateScanProgressUI(data) {
+            const label = document.getElementById('scan-progress-label');
+            const barWrap = document.getElementById('scan-progress-bar-wrap');
+            const bar = document.getElementById('scan-progress-bar');
+
+            if (data.status === 'running') {
+                barWrap.classList.remove('hidden');
+                bar.style.width = '100%';
+                bar.classList.add('animate-pulse');
+                label.textContent = `JPX400 スキャン中... ${data.total || 400} 銘柄を並列処理しています`;
+                return;
+            }
+
+            bar.classList.remove('animate-pulse');
+
+            if (data.status === 'completed') {
+                barWrap.classList.remove('hidden');
+                bar.style.width = '100%';
+                const elapsed = data.elapsed_seconds != null ? ` / ${data.elapsed_seconds}秒` : '';
+                label.textContent = `完了: BUY SIGNAL ${data.buy_count || 0} 件（${data.mode || selectedRiskMode}${elapsed}）`;
+                return;
+            }
+
+            if (data.status === 'failed') {
+                label.textContent = `スキャン失敗: ${data.error || '不明なエラー'}`;
+                return;
+            }
+
+            barWrap.classList.add('hidden');
+            bar.style.width = '0%';
+            label.textContent = '待機中';
+        }
+
+        function renderScanHits(hits) {
+            const emptyEl = document.getElementById('scan-hits-empty');
+            const listEl = document.getElementById('scan-hits-list');
+            listEl.innerHTML = '';
+
+            if (!hits || hits.length === 0) {
+                emptyEl.classList.remove('hidden');
+                emptyEl.innerHTML = '今回のスキャンでは BUY SIGNAL は検出されませんでした。別モードで再スキャンするか、後日もう一度試してください。';
+                listEl.classList.add('hidden');
+                return;
+            }
+
+            emptyEl.classList.add('hidden');
+            listEl.classList.remove('hidden');
+
+            hits.forEach((hit) => {
+                const preset = hit.preset_matched || 'none';
+                const label = hit.signal_label || (preset === 'oshieme' ? '押し目シグナル' : preset === 'junbari' ? '順張りブレイク' : 'シグナル');
+                const row = document.createElement('div');
+                row.className = 'flex flex-col md:flex-row md:items-center gap-3 bg-slate-900/50 border border-slate-800 rounded-xl p-3';
+                row.innerHTML = `
+                    <div class="flex-1 min-w-0">
+                        <div class="flex flex-wrap items-center gap-2 mb-1">
+                            <span class="font-bold text-slate-100 mono-font text-xs">${escapeHtml(hit.ticker || '')}</span>
+                            <span class="text-[10px] px-2 py-0.5 rounded border ${signalBadgeClass(preset)}">${escapeHtml(label)}</span>
+                        </div>
+                        <div class="text-[11px] text-slate-400 truncate">${escapeHtml(hit.name || '')}</div>
+                        <div class="text-[10px] text-slate-500 mt-1 mono-font">RSI ${formatRsi(hit.rsi)} / 終値 ${hit.current_price ?? '—'}</div>
+                    </div>
+                    <button type="button"
+                        class="shrink-0 bg-cyan-800 hover:bg-cyan-700 disabled:bg-slate-700 text-white font-bold px-3 py-2 rounded-lg text-[11px] transition-colors"
+                        data-ticker="${escapeHtml(hit.ticker || '')}">
+                        AI診断
+                    </button>
+                `;
+                row.querySelector('button').addEventListener('click', () => {
+                    diagnoseHitWithDify(hit.ticker, hit.name);
+                });
+                listEl.appendChild(row);
+            });
+        }
+
+        async function diagnoseHitWithDify(ticker, name) {
+            const code = extractStockCode(ticker);
+            if (!code) return;
+            await sendToDify({
+                query: code,
+                code,
+                mode: selectedRiskMode,
+                displayText: `【${selectedRiskMode}】${ticker}${name ? ` ${name}` : ''} を AI 診断`,
+            });
+        }
+
+        async function startJpx400Scan() {
+            if (isScanRunning || isChatBusy) return;
+
+            setScanBusy(true);
+            const scanStatus = document.getElementById('scan-status');
+            const btnLabel = document.getElementById('scan-btn-label');
+            const btnIcon = document.getElementById('scan-btn-icon');
+
+            btnLabel.textContent = 'スキャン中...';
+            btnIcon.className = 'fa-solid fa-spinner fa-spin text-xs';
+            scanStatus.textContent = `【${selectedRiskMode}】JPX400 約400銘柄をリアルタイムスキャン中...`;
+            updateScanProgressUI({ status: 'running', total: 400 });
+
+            try {
+                const response = await fetch('/api/jpx400/scan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: selectedRiskMode }),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(data.detail || `サーバーエラー (${response.status})`);
+                }
+
+                updateScanProgressUI(data);
+                renderScanHits(data.buy_signals || []);
+                scanStatus.textContent = data.message || `JPX400 スキャン完了: BUY SIGNAL ${data.buy_count || 0} 件`;
+            } catch (error) {
+                updateScanProgressUI({ status: 'failed', error: error.message });
+                scanStatus.textContent = `スキャン失敗: ${error.message}`;
+            } finally {
+                setScanBusy(false);
+                btnLabel.textContent = 'JPX400 スキャン開始';
+                btnIcon.className = 'fa-solid fa-radar text-xs';
+            }
         }
 
         function scrollChatToBottom() {
@@ -560,7 +718,7 @@
 
         function setChatBusy(busy) {
             isChatBusy = busy;
-            document.getElementById('scan-btn').disabled = busy;
+            document.getElementById('scan-btn').disabled = busy || isScanRunning;
             document.getElementById('chat-send-btn').disabled = busy;
             document.getElementById('chat-input').disabled = busy;
         }
@@ -618,21 +776,20 @@
                 scanStatus.textContent = `診断失敗: ${error.message}`;
             } finally {
                 setChatBusy(false);
-                btnLabel.textContent = 'STELLAR に診断依頼';
-                btnIcon.className = 'fa-solid fa-robot text-xs';
+                btnLabel.textContent = 'JPX400 スキャン開始';
+                btnIcon.className = 'fa-solid fa-radar text-xs';
             }
         }
 
-        async function startMarketScan() {
-            const request = buildDifyRequest(null, {
-                useWatchlist: true,
+        async function diagnoseWatchlistTicker(ticker) {
+            const code = extractStockCode(ticker);
+            if (!code) return;
+            await sendToDify({
+                query: code,
+                code,
                 mode: selectedRiskMode,
+                displayText: `【${selectedRiskMode}】${ticker} を AI 診断`,
             });
-            if (!request) {
-                setWatchlistFeedback('診断する銘柄をウォッチリストに追加してください。', true);
-                return;
-            }
-            await sendToDify(request);
         }
 
         async function sendChatMessage() {

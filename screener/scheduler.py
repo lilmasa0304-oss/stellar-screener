@@ -84,12 +84,15 @@ def _run_jpx400_scan_job():
 
         # LINE 通知
         sent_line = False
-        if buy_signals and config.validate_line_credentials():
-            notifier = LineNotifier(config.line_token, config.line_user_id)
-            message  = notifier.build_buy_signal_message(buy_signals)
-            sent_line = notifier.send_notification(message)
-            logger.info(f"[Scheduler] LINE 送信: {'成功' if sent_line else '失敗'}")
-        elif not buy_signals:
+        if buy_signals:
+            if config.validate_line_credentials():
+                notifier = LineNotifier(config.line_token, config.line_user_id)
+                message  = notifier.build_buy_signal_message(buy_signals)
+                sent_line = notifier.send_notification(message)
+                logger.info(f"[Scheduler] LINE 送信: {'成功' if sent_line else '失敗'}")
+            else:
+                logger.warning("[Scheduler] LINE 認証情報未設定のため通知をスキップします。")
+        else:
             logger.info("[Scheduler] BUY SIGNAL なし。LINE 通知をスキップ。")
 
         storage.complete_session(
