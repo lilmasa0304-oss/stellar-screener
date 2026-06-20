@@ -49,6 +49,13 @@ load_dotenv()
 DIFY_API_KEY  = os.getenv("DIFY_API_KEY", "")
 DIFY_BASE_URL = os.getenv("DIFY_BASE_URL", "https://api.dify.ai/v1").rstrip("/")
 
+
+def _is_dify_configured() -> bool:
+    """Dify Chat-App API キーが有効に設定されているか。"""
+    if not DIFY_API_KEY:
+        return False
+    return DIFY_API_KEY not in ("your_dify_app_api_key_here", "your_dify_api_key_here")
+
 # ── JPX400 リアルタイムスキャン（インメモリ・直近結果キャッシュ） ─────────────
 _jpx400_progress: Dict[str, Any] = {
     "status":    "idle",   # idle | running | completed | failed
@@ -637,8 +644,8 @@ def _compute_technical_metrics(df) -> Dict[str, float]:
     }
 
 
-def _diagnose_ticker(raw_code: str) -> Dict[str, Any]:
-    """株価取得 → テクニカル分析 → Dify 向けレスポンスを組み立てる。"""
+def _diagnose_ticker(raw_code: str, mode: Optional[str] = None) -> Dict[str, Any]:
+    """株価取得 → テクニカル分析 → チャット/Dify 向けレスポンスを組み立てる。"""
     ticker_code = raw_code.strip()
     yahoo_ticker = _normalize_ticker_code(ticker_code)
 
@@ -651,7 +658,11 @@ def _diagnose_ticker(raw_code: str) -> Dict[str, Any]:
         )
 
     name = company_name or f"銘柄コード:{ticker_code}"
-    evaluator = StrategyEvaluator(read_config_yaml())
+    config = read_config_yaml()
+    evaluator = StrategyEvaluator(config)
+    safe_mode = mode if mode in RISK_MODES else None
+    if safe_mode:
+        _apply_risk_mode(evaluator, RISK_MODES[safe_mode])
     result = evaluator.evaluate(yahoo_ticker, name, df)
     metrics = _compute_technical_metrics(df)
 
@@ -661,9 +672,12 @@ def _diagnose_ticker(raw_code: str) -> Dict[str, Any]:
         "code":                display_code,
         "ticker":              display_code,
         "name":                name,
-        "current_price":       result.get("close_price"),
+        "mode":                safe_mode or "堅実",
+        "current_price":       result.get("current_price") or result.get("close_price"),
         "rsi":                 result.get("rsi"),
-        "ma25_divergence_pct": metrics["ma25_divergence_pct"],
+        "ma25":                result.get("ma25"),
+        "ma25_uptrend":        result.get("ma25_uptrend"),
+        "ma25_deviation_pct":  metrics["ma25_divergence_pct"],
         "volume_ratio":        metrics["volume_ratio"],
         "buy_signal":          result.get("buy_signal", False),
         "reason":              result.get("reason"),
@@ -958,31 +972,44 @@ def _format_stellar_answer(screen_data: Dict[str, Any], query: str) -> str:
     ]
     if screen_data.get("code"):
         price = screen_data.get("current_price")
-        price_line = f"終値: {price}円" if price is not None else "終値: 取得中"
+        price_line = f"終値: {price:,.1f}円" if price is not None else "終値: 取得中"
+        ma25 = screen_data.get("ma25")
+        ma25_line = f"MA25: {ma25:,.1f}円" if ma25 is not None else "MA25: —"
+        uptrend = screen_data.get("ma25_uptrend")
+        trend_arrow = "↑ 上向き" if uptrend else "↓ 下向き/横ばい"
+        preset = screen_data.get("preset_matched", "none")
+        preset_labels = {"oshieme": "押し目シグナル", "junbari": "順張りブレイク", "none": "該当なし"}
         lines += [
+            f"リスクモード: {screen_data.get('mode', '堅実')}",
             f"銘柄コード: {screen_data.get('code')}",
             f"銘柄名: {screen_data.get('name', '不明')}",
             price_line,
-            f"RSI: {_format_rsi(screen_data.get('rsi'))}",
-            f"25日線乖離率: {screen_data.get('ma25_divergence_pct')}%",
+            f"RSI(14): {_format_rsi(screen_data.get('rsi'))}",
+            f"{ma25_line} ({trend_arrow})",
+            f"25日線乖離率: {screen_data.get('ma25_deviation_pct', screen_data.get('ma25_divergence_pct'))}%",
             f"出来高倍率: {screen_data.get('volume_ratio')}倍",
-            f"BUY SIGNAL: {'あり' if screen_data.get('buy_signal') else 'なし'}",
+            f"シグナル種別: {preset_labels.get(preset, preset)}",
+            f"BUY SIGNAL: {'✅ あり' if screen_data.get('buy_signal') else '❌ なし'}",
             f"トレンド判定: {screen_data.get('trend_status', 'WAIT')}",
-            f"診断コメント: {screen_data.get('reason', '')}",
+            f"診断コメント: {screen_data.get('reason', '—')}",
         ]
     else:
         mode = screen_data.get("mode", "堅実")
         lines += [
             f"リスクモード: {mode}",
             f"RSI: {_format_rsi(screen_data.get('rsi'))}",
-            f"25日線乖離率: {screen_data.get('ma25_divergence_pct')}%",
+            f"25日線乖離率: {screen_data.get('ma25_deviation_pct', screen_data.get('ma25_divergence_pct'))}%",
             f"出来高倍率: {screen_data.get('volume_ratio')}倍",
             f"メッセージ: {screen_data.get('message', '')}",
         ]
     if screen_data.get("fast_response"):
         lines += ["", "※ ローカル高速診断（Dify ワークフロー不通時のフォールバック）"]
     elif screen_data.get("local_diagnosis"):
-        lines += ["", "※ ローカル実データ診断（Dify 未対応銘柄をバックエンドで直接分析）"]
+        source = screen_data.get("source", "local")
+        if source == "dify_fallback":
+            lines += ["", "※ Dify 不通のため STELLAR ローカル実データ診断で代替しました"]
+        else:
+            lines += ["", "※ STELLAR ローカル実データ診断（Yahoo Finance リアルタイム取得）"]
     return "\n".join(lines)
 
 
@@ -1039,10 +1066,10 @@ def _call_dify_chat_api(
     mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Dify Chat-App API (blocking) を呼び出す。"""
-    if not DIFY_API_KEY:
+    if not _is_dify_configured():
         raise HTTPException(
-            status_code=500,
-            detail="DIFY_API_KEY が未設定です。.env に API キーを設定してください。",
+            status_code=503,
+            detail="DIFY_API_KEY が未設定です。ローカル診断モードを使用してください。",
         )
 
     inputs = _build_dify_inputs(code, mode)
@@ -1094,18 +1121,21 @@ async def _build_local_multi_diagnosis_response(
     codes: List[str],
     conversation_id: Optional[str],
     *,
+    mode: Optional[str] = None,
     fallback: bool = False,
 ) -> Dict[str, Any]:
     """複数銘柄の実データ診断結果をチャット応答形式で返す。"""
     sections: List[str] = []
     for ticker_code in codes:
-        screen_data = await asyncio.to_thread(_diagnose_ticker, ticker_code)
+        screen_data = await asyncio.to_thread(_diagnose_ticker, ticker_code, mode)
         screen_data["local_diagnosis"] = True
+        screen_data["source"] = "dify_fallback" if fallback else "local"
         sections.append(_format_stellar_answer(screen_data, ticker_code))
 
     return {
         "answer":          "\n\n".join(sections),
         "conversation_id": conversation_id,
+        "source":          "dify_fallback" if fallback else "local",
         "fallback":        fallback,
     }
 
@@ -1115,21 +1145,51 @@ async def _build_local_diagnosis_response(
     ticker_code: str,
     conversation_id: Optional[str],
     *,
+    mode: Optional[str] = None,
     fallback: bool = False,
 ) -> Dict[str, Any]:
     """単一銘柄の実データ診断結果をチャット応答形式で返す。"""
-    screen_data = await asyncio.to_thread(_diagnose_ticker, ticker_code)
+    screen_data = await asyncio.to_thread(_diagnose_ticker, ticker_code, mode)
     screen_data["local_diagnosis"] = True
+    screen_data["source"] = "dify_fallback" if fallback else "local"
     return {
         "answer":          _format_stellar_answer(screen_data, query),
         "conversation_id": conversation_id,
+        "source":          "dify_fallback" if fallback else "local",
+        "fallback":        fallback,
+    }
+
+
+async def _local_chat_response(
+    query: str,
+    code: Optional[str],
+    conversation_id: Optional[str],
+    mode: Optional[str] = None,
+    *,
+    fallback: bool = False,
+) -> Dict[str, Any]:
+    """Dify 未設定時 / 障害時のローカル実データ診断応答。"""
+    codes = _split_stock_codes(code) or _split_stock_codes(query)
+    if len(codes) > 1:
+        return await _build_local_multi_diagnosis_response(
+            query, codes, conversation_id, mode=mode, fallback=fallback,
+        )
+    if len(codes) == 1:
+        return await _build_local_diagnosis_response(
+            query, codes[0], conversation_id, mode=mode, fallback=fallback,
+        )
+    screen_data = _local_screen_from_query(query)
+    return {
+        "answer":          _format_stellar_answer(screen_data, query),
+        "conversation_id": conversation_id,
+        "source":          "dify_fallback" if fallback else "local",
         "fallback":        fallback,
     }
 
 
 @app.post("/api/dify/chat")
 async def dify_chat_proxy(payload: DifyChatPayload):
-    """フロントエンドから Dify Chat-App API へ中継する。"""
+    """フロントエンド → Dify Chat-App API プロキシ（未設定時はローカル実診断）。"""
     query = payload.query.strip()
     if not query:
         raise HTTPException(status_code=422, detail="query が空です。")
@@ -1137,8 +1197,14 @@ async def dify_chat_proxy(payload: DifyChatPayload):
     dify_code = _resolve_dify_code(payload.code, query)
     dify_mode = payload.mode if payload.mode in RISK_MODES else None
     logger.info(
-        f"Dify チャット送信: query={query!r} code={dify_code or '(なし)'} mode={dify_mode or '(なし)'}"
+        f"チャット診断: query={query!r} code={dify_code or '(なし)'} mode={dify_mode or '(なし)'}"
     )
+
+    if not _is_dify_configured():
+        logger.info("DIFY_API_KEY 未設定 → ローカル実診断モードで応答")
+        return await _local_chat_response(
+            query, dify_code, payload.conversation_id, dify_mode, fallback=False,
+        )
 
     try:
         dify_result = await asyncio.to_thread(
@@ -1154,52 +1220,33 @@ async def dify_chat_proxy(payload: DifyChatPayload):
             logger.warning(
                 f"Dify 未対応応答を検知 → ローカル実診断に切替: codes={','.join(codes)}"
             )
-            if len(codes) > 1:
-                return await _build_local_multi_diagnosis_response(
-                    query,
-                    codes,
-                    dify_result.get("conversation_id"),
-                    fallback=True,
-                )
-            return await _build_local_diagnosis_response(
-                query,
-                codes[0],
-                dify_result.get("conversation_id"),
-                fallback=True,
+            return await _local_chat_response(
+                query, dify_code, dify_result.get("conversation_id"), dify_mode, fallback=True,
             )
+        dify_result["source"] = "dify"
         return dify_result
     except HTTPException as exc:
-        # Dify ワークフロー内 HTTP ノード（ngrok 不通等）で失敗した場合のフォールバック
         logger.warning(f"Dify 失敗 → ローカル診断にフォールバック: {exc.detail}")
-        codes = _split_stock_codes(dify_code) or _split_stock_codes(query)
-        if len(codes) > 1:
-            return await _build_local_multi_diagnosis_response(
-                query,
-                codes,
-                payload.conversation_id,
-                fallback=True,
-            )
-        if len(codes) == 1:
-            return await _build_local_diagnosis_response(
-                query,
-                codes[0],
-                payload.conversation_id,
-                fallback=True,
-            )
-        screen_data = _local_screen_from_query(query)
-        return {
-            "answer":          _format_stellar_answer(screen_data, query),
-            "conversation_id": payload.conversation_id,
-            "fallback":        True,
-        }
+        return await _local_chat_response(
+            query, dify_code, payload.conversation_id, dify_mode, fallback=True,
+        )
+
+
+@app.post("/api/chat")
+async def stellar_chat(payload: DifyChatPayload):
+    """STELLAR 診断チャット（/api/dify/chat のエイリアス）。"""
+    return await dify_chat_proxy(payload)
 
 
 @app.get("/api/dify/status")
 def dify_status():
-    """Dify 連携の設定状態を返す（APIキー本体は返さない）。"""
+    """Dify / ローカル診断チャットの設定状態を返す（APIキー本体は返さない）。"""
+    configured = _is_dify_configured()
     return {
-        "configured": bool(DIFY_API_KEY),
-        "base_url":   DIFY_BASE_URL,
+        "configured":              configured,
+        "local_diagnosis_available": True,
+        "mode":                    "dify" if configured else "local",
+        "base_url":                DIFY_BASE_URL,
     }
 
 
@@ -1212,6 +1259,8 @@ def health_check():
         "status":          "ok",
         "platform":        "render" if IS_RENDER else ("vercel" if IS_VERCEL else "local"),
         "line_connected":  cfg.validate_line_credentials(),
+        "dify_configured": _is_dify_configured(),
+        "chat_mode":       "dify" if _is_dify_configured() else "local",
         "ticker_count":    len(cfg.tickers),
         "universe":        cfg.universe or "custom",
         "scheduler":       "disabled" if DISABLE_SCHEDULER else "active",

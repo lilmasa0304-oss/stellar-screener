@@ -294,7 +294,7 @@
             <div class="flex justify-between items-center border-b border-slate-800 pb-3">
                 <h2 class="text-sm font-bold text-cyan-400 flex items-center gap-2 tracking-wide">
                     <i class="fa-solid fa-comments"></i> STELLAR 診断チャット
-                    <span class="text-[10px] text-slate-500 font-normal">via Dify</span>
+                    <span id="dify-mode-label" class="text-[10px] text-slate-500 font-normal">接続確認中</span>
                 </h2>
                 <span id="dify-status-badge"
                     class="text-[9px] bg-slate-900 text-slate-400 border border-slate-700 px-2 py-0.5 rounded font-bold mono-font">接続確認中</span>
@@ -306,7 +306,7 @@
                         <i class="fa-solid fa-star text-emerald-400 text-xs"></i>
                     </div>
                     <div class="bg-slate-900/70 border border-slate-800 rounded-xl rounded-tl-sm px-4 py-3 text-xs text-slate-300 leading-relaxed max-w-[90%]">
-                        STELLAR SCREENER へようこそ。「JPX400 スキャン開始」でシグナル銘柄をリアルタイム検索し、ヒット行の「AI診断」から Dify 診断ができます。ウォッチリストはこのブラウザにだけ保存されます。
+                        銘柄コード（例: <span class="mono-font text-cyan-400">7203</span>）やリスクモード（<span class="text-emerald-400">堅実</span>）を入力すると、Yahoo Finance の実データでテクニカル診断します。JPX400 スキャン結果の「AI診断」ボタンからも利用できます。
                     </div>
                 </div>
             </div>
@@ -768,7 +768,10 @@
                 conversationId = data.conversation_id || conversationId;
                 const answer = data.answer || '（応答が空でした）';
                 await typeOutMessage(stellarEl, answer);
-                scanStatus.textContent = 'STELLAR 診断が完了しました。';
+                const sourceLabel = data.source === 'dify'
+                    ? 'Dify AI 診断'
+                    : (data.fallback ? 'ローカル診断（Dify代替）' : 'ローカル実データ診断');
+                scanStatus.textContent = `${sourceLabel} が完了しました。`;
             } catch (error) {
                 stellarEl.classList.remove('typing-cursor');
                 stellarEl.textContent = `エラー: ${error.message}`;
@@ -812,17 +815,25 @@
 
         async function loadDifyStatus() {
             const badge = document.getElementById('dify-status-badge');
+            const modeLabel = document.getElementById('dify-mode-label');
             try {
                 const status = await fetch('/api/dify/status').then((r) => r.json());
                 if (status.configured) {
-                    badge.textContent = 'Dify 接続可';
+                    badge.textContent = 'Dify AI 接続可';
                     badge.className = 'text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-bold mono-font';
+                    if (modeLabel) modeLabel.textContent = 'via Dify + ローカル';
+                } else if (status.local_diagnosis_available) {
+                    badge.textContent = 'ローカル診断';
+                    badge.className = 'text-[9px] bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-2 py-0.5 rounded font-bold mono-font';
+                    if (modeLabel) modeLabel.textContent = 'Yahoo Finance 実データ';
                 } else {
                     badge.textContent = 'APIキー未設定';
                     badge.className = 'text-[9px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded font-bold mono-font';
+                    if (modeLabel) modeLabel.textContent = '未設定';
                 }
             } catch (_) {
                 badge.textContent = '接続不明';
+                if (modeLabel) modeLabel.textContent = '—';
             }
         }
 
