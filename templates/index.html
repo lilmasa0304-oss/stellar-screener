@@ -258,7 +258,7 @@
                     </div>
 
                     <div class="flex gap-2">
-                        <input type="text" id="watchlist-input" placeholder="コード追加（例: 9101.T または 9101）"
+                        <input type="text" id="watchlist-input" placeholder="コード追加（例: 9101 / 285A）"
                             class="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-cyan-500 font-medium text-slate-300 mono-font"
                             onkeydown="if(event.key==='Enter') addWatchlistTicker()">
                         <button type="button" onclick="addWatchlistTicker()" id="watchlist-add-btn"
@@ -306,13 +306,13 @@
                         <i class="fa-solid fa-star text-emerald-400 text-xs"></i>
                     </div>
                     <div class="bg-slate-900/70 border border-slate-800 rounded-xl rounded-tl-sm px-4 py-3 text-xs text-slate-300 leading-relaxed max-w-[90%]">
-                        銘柄コード（例: <span class="mono-font text-cyan-400">7203</span>）やリスクモード（<span class="text-emerald-400">堅実</span>）を入力すると、Yahoo Finance の実データでテクニカル診断します。JPX400 スキャン結果の「AI診断」ボタンからも利用できます。
+                        銘柄コード（例: <span class="mono-font text-cyan-400">7203</span> / <span class="mono-font text-cyan-400">285A</span>）やリスクモード（<span class="text-emerald-400">堅実</span>）を入力すると、Yahoo Finance の実データでテクニカル診断します。JPX400 スキャン結果の「AI診断」ボタンからも利用できます。
                     </div>
                 </div>
             </div>
 
             <div class="flex gap-2 pt-2 border-t border-slate-800/60">
-                <input type="text" id="chat-input" placeholder="例: 堅実 / 1605を判断して"
+                <input type="text" id="chat-input" placeholder="例: 285A / 堅実 / 1605を判断して"
                     class="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-cyan-500 text-slate-200"
                     onkeydown="if(event.key==='Enter') sendChatMessage()">
                 <button onclick="sendChatMessage()" id="chat-send-btn"
@@ -332,20 +332,38 @@
         let watchlistTickers = [];
         const RISK_MODES = ['堅実', '標準', '積極'];
         const WATCHLIST_STORAGE_KEY = 'stellar_watchlist_v1';
+        const JP_STOCK_CODE = /^[0-9A-Z]{4}$/i;
+
+        function normalizeStockInput(raw) {
+            return (raw || '').normalize('NFKC').trim();
+        }
+
+        function isJpStockCode(token) {
+            const value = (token || '').toUpperCase();
+            return JP_STOCK_CODE.test(value) && /\d/.test(value);
+        }
+
+        function normalizeJpStockCode(raw) {
+            const token = normalizeStockInput(raw).toUpperCase().replace(/\.T$/i, '');
+            return isJpStockCode(token) ? token : null;
+        }
 
         function extractStockCode(raw) {
-            const trimmed = (raw || '').trim();
+            const trimmed = normalizeStockInput(raw);
             if (!trimmed) return null;
-            if (/^\d{4}$/.test(trimmed)) return trimmed;
-            if (/^\d{4}\.T$/i.test(trimmed)) return trimmed.replace(/\.T$/i, '');
-            const match = trimmed.match(/(\d{4})\.T/i) || trimmed.match(/(\d{4})/);
-            return match ? match[1] : null;
+            const direct = normalizeJpStockCode(trimmed);
+            if (direct) return direct;
+            const match = trimmed.match(/(\d{3}[A-Z])\.T/i)
+                || trimmed.match(/(\d{3}[A-Z])/i)
+                || trimmed.match(/(\d{4})\.T/i)
+                || trimmed.match(/(\d{4})/);
+            return match ? match[1].toUpperCase() : null;
         }
 
         function extractWatchlistCodes(tickers) {
             const codes = tickers
-                .map((t) => t.replace(/\.T$/i, ''))
-                .filter((c) => /^\d{4}$/.test(c));
+                .map((t) => normalizeJpStockCode(t))
+                .filter(Boolean);
             return codes.length > 0 ? codes.join(',') : null;
         }
 
@@ -362,7 +380,7 @@
 
         function buildDifyRequest(rawInput = null, options = {}) {
             const useWatchlist = options.useWatchlist === true;
-            const trimmed = (rawInput || '').trim();
+            const trimmed = normalizeStockInput(rawInput || '');
             let codes = null;
             let mode = options.mode || selectedRiskMode;
 
@@ -390,10 +408,8 @@
         function normalizeWatchlistTicker(raw) {
             const value = raw.trim().toUpperCase();
             if (!value) return null;
-            const digitsOnly = value.replace('.T', '');
-            if (/^\d{4}$/.test(digitsOnly)) return `${digitsOnly}.T`;
-            if (/^\d{4}\.T$/.test(value)) return value;
-            return null;
+            const code = normalizeJpStockCode(value);
+            return code ? `${code}.T` : null;
         }
 
         function setWatchlistFeedback(message, isError = false) {
@@ -468,7 +484,7 @@
             const normalized = normalizeWatchlistTicker(input.value);
 
             if (!normalized) {
-                setWatchlistFeedback('4桁の銘柄コードを入力してください（例: 9101 または 9101.T）', true);
+                setWatchlistFeedback('銘柄コードを入力してください（例: 9101 / 285A）', true);
                 return;
             }
             if (watchlistTickers.includes(normalized)) {
@@ -801,29 +817,44 @@
             if (!query) return;
             input.value = '';
 
-            const request = buildDifyRequest(query);
-            if (!request) {
-                if (RISK_MODES.includes(query) && watchlistTickers.length === 0) {
-                    setWatchlistFeedback('モード診断にはウォッチリストに銘柄を追加してください。', true);
-                } else {
-                    setWatchlistFeedback('4桁の銘柄コードを入力してください（例: 7203）', true);
-                }
+            if (RISK_MODES.includes(query) && watchlistTickers.length === 0) {
+                appendUserMessage(query);
+                const stellarEl = appendStellarMessageShell();
+                stellarEl.textContent = 'モード診断にはウォッチリストに銘柄を追加してください。';
                 return;
             }
-            await sendToDify(request);
+
+            const request = buildDifyRequest(query);
+            if (request) {
+                await sendToDify(request);
+                return;
+            }
+
+            const code = extractStockCode(query);
+            await sendToDify({
+                query: code || query,
+                code: code || undefined,
+                mode: selectedRiskMode,
+                displayText: query,
+            });
         }
 
         async function loadDifyStatus() {
             const badge = document.getElementById('dify-status-badge');
             const modeLabel = document.getElementById('dify-mode-label');
             try {
-                const status = await fetch('/api/dify/status').then((r) => r.json());
-                if (status.configured) {
+                const status = await fetch('/api/dify/status?probe=1').then((r) => r.json());
+                const probe = status.probe || {};
+                if (status.configured && probe.workflow_ok) {
                     badge.textContent = 'Dify AI 接続可';
                     badge.className = 'text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-bold mono-font';
                     if (modeLabel) modeLabel.textContent = 'via Dify + ローカル';
+                } else if (status.configured && probe.reachable) {
+                    badge.textContent = 'Dify ワークフロー異常';
+                    badge.className = 'text-[9px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded font-bold mono-font';
+                    if (modeLabel) modeLabel.textContent = 'ローカル診断で代替中';
                 } else if (status.local_diagnosis_available) {
-                    badge.textContent = 'ローカル診断';
+                    badge.textContent = status.configured ? 'Dify 接続不可' : 'ローカル診断';
                     badge.className = 'text-[9px] bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-2 py-0.5 rounded font-bold mono-font';
                     if (modeLabel) modeLabel.textContent = 'Yahoo Finance 実データ';
                 } else {

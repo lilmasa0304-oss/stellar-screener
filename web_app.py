@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import uuid
 import logging
 import sys
@@ -16,6 +17,13 @@ from pydantic import BaseModel, Field
 
 from screener.config import Config
 from screener.data_fetcher import DataFetcher
+from screener.jp_stock_code import (
+    extract_jp_stock_code,
+    find_jp_stock_code_in_text,
+    normalize_jp_stock_code,
+    normalize_stock_codes_param,
+    split_stock_codes,
+)
 from screener.strategy import StrategyEvaluator
 from screener.notifier import LineNotifier
 from screener import storage
@@ -169,7 +177,7 @@ class UpdateConfigPayload(BaseModel):
 
 
 class TickerDiagnosisPayload(BaseModel):
-    ticker: str = Field(..., description="4桁の日本株銘柄コード（例: 1605, 7203）")
+    ticker: str = Field(..., description="日本株銘柄コード（例: 1605, 7203, 285A）")
 
 
 class ScreenPayload(BaseModel):
@@ -236,7 +244,10 @@ def get_dashboard():
     if not html_path.exists():
         raise HTTPException(status_code=404, detail="index.html not found.")
     with open(html_path, "r", encoding="utf-8") as f:
-        return f.read()
+        return HTMLResponse(
+            content=f.read(),
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
 
 
 # ── 設定 API ──────────────────────────────────────────────────────────────
@@ -620,13 +631,16 @@ def get_scan_results(scan_id: str, buy_signal_only: bool = False):
 
 # ── Dify ボット連携 API ───────────────────────────────────────────────────
 def _normalize_ticker_code(raw: str) -> str:
-    """4桁コード・1605.T などを Yahoo Finance 用ティッカーに正規化する。"""
-    code = raw.strip()
-    if not code:
-        raise HTTPException(status_code=422, detail="銘柄コードが空です。")
-    if code.endswith(".T"):
-        return code
-    return f"{code}.T"
+    """銘柄コード (7203, 285A 等) を Yahoo Finance 用ティッカーに正規化する。"""
+    normalized = normalize_jp_stock_code(raw)
+    if not normalized:
+        code = raw.strip()
+        if not code:
+            raise HTTPException(status_code=422, detail="銘柄コードが空です。")
+        if code.upper().endswith(".T"):
+            return code.upper()
+        return f"{code.upper()}.T"
+    return f"{normalized}.T"
 
 
 def _compute_technical_metrics(df) -> Dict[str, float]:
@@ -822,14 +836,14 @@ async def execute_screener(payload: ScreenPayload):
     if payload.code is not None:
         code = payload.code.strip()
         if code:
-            normalized = _normalize_stock_codes_param(code)
+            normalized = normalize_stock_codes_param(code)
             if normalized and "," in normalized:
                 logger.info(f"/api/v1/screen 複数銘柄実診断: codes={normalized}")
                 stocks = []
                 for single_code in normalized.split(","):
                     try:
                         stocks.append(
-                            await asyncio.to_thread(_diagnose_ticker, single_code)
+                            await asyncio.to_thread(_diagnose_ticker, single_code, payload.mode)
                         )
                     except HTTPException:
                         raise
@@ -840,8 +854,12 @@ async def execute_screener(payload: ScreenPayload):
                     "count":  len(stocks),
                     "stocks": stocks,
                 }
+            single = normalized or extract_jp_stock_code(code)
+            if single:
+                logger.info(f"/api/v1/screen 単一銘柄実診断: code={single}")
+                return await asyncio.to_thread(_diagnose_ticker, single, payload.mode)
             logger.info(f"/api/v1/screen 高速ダミー応答: code={code}")
-            return _fast_dummy_screen_response(code)
+            return _fast_dummy_screen_response(code, payload.mode)
 
     ticker_code = (payload.ticker or "").strip()
     if ticker_code:
@@ -877,6 +895,19 @@ def diagnose_ticker_for_bot(payload: TickerDiagnosisPayload):
         raise HTTPException(status_code=500, detail=f"銘柄診断中にエラーが発生しました: {e}")
 
 
+@app.post("/api/diagnose")
+@app.post("/api/v1/diagnose")
+def diagnose_ticker_legacy(payload: TickerDiagnosisPayload):
+    """Dify ワークフロー互換エイリアス（旧 URL → /api/bot/diagnose）。"""
+    return diagnose_ticker_for_bot(payload)
+
+
+@app.post("/api/screen")
+async def execute_screener_legacy(payload: ScreenPayload):
+    """Dify ワークフロー互換エイリアス（旧 URL → /api/v1/screen）。"""
+    return await execute_screener(payload)
+
+
 # ── Dify Chat-App API プロキシ（APIキーをサーバー側で保持） ───────────────
 _DIFY_STUB_MARKERS = (
     "スクリーナーAPIとの連携を準備中",
@@ -886,25 +917,13 @@ _DIFY_STUB_MARKERS = (
 
 
 def _extract_single_ticker_from_query(query: str) -> Optional[str]:
-    """単一銘柄の診断依頼かどうかを判定し、4桁コードを返す。"""
-    import re
-
+    """単一銘柄の診断依頼かどうかを判定し、銘柄コードを返す。"""
     q = query.strip()
     if not q:
         return None
-    # ウォッチリスト一括スクリーニングは Dify 側のフローに任せる
     if "ウォッチリスト" in q and "スクリーニング診断" in q:
         return None
-
-    if re.fullmatch(r"\d{4}", q):
-        return q
-    if re.fullmatch(r"\d{4}\.T", q, re.IGNORECASE):
-        return q[:4]
-
-    code_match = re.search(r"(\d{4})\.T", q, re.IGNORECASE) or re.search(r"(\d{4})", q)
-    if code_match:
-        return code_match.group(1)
-    return None
+    return extract_jp_stock_code(q)
 
 
 def _is_dify_stub_answer(answer: str) -> bool:
@@ -916,19 +935,18 @@ def _is_dify_stub_answer(answer: str) -> bool:
 
 def _parse_query_for_screen(query: str) -> Dict[str, Any]:
     """チャット入力から銘柄コードまたはリスクモードを推定する。"""
-    import re
     q = query.strip()
     if q in RISK_MODES:
         return {"mode": q}
     for mode in RISK_MODES:
         if mode in q:
-            code_match = re.search(r"(\d{4})\.T", q) or re.search(r"(\d{4})", q)
-            if code_match:
-                return {"mode": mode, "code": code_match.group(1)}
+            code = find_jp_stock_code_in_text(q)
+            if code:
+                return {"mode": mode, "code": code}
             return {"mode": mode}
-    code_match = re.search(r"\d{4}", q)
-    if code_match:
-        return {"code": code_match.group()}
+    code = find_jp_stock_code_in_text(q)
+    if code:
+        return {"code": code}
     return {"mode": "堅実"}
 
 
@@ -1013,44 +1031,21 @@ def _format_stellar_answer(screen_data: Dict[str, Any], query: str) -> str:
     return "\n".join(lines)
 
 
-def _normalize_stock_codes_param(raw: Optional[str]) -> Optional[str]:
-    """'7203', '7203.T', '7203,1605.T' などを Dify / API 向け 4 桁コードに正規化する。"""
-    import re
-
-    if not raw or not raw.strip():
-        return None
-
-    codes: List[str] = []
-    for part in raw.split(","):
-        token = part.strip().upper().removesuffix(".T")
-        if re.fullmatch(r"\d{4}", token) and token not in codes:
-            codes.append(token)
-    return ",".join(codes) if codes else None
-
-
 def _resolve_dify_code(explicit_code: Optional[str], query: str) -> Optional[str]:
     """フロントから渡された code を優先し、なければ query から推定する。"""
-    normalized = _normalize_stock_codes_param(explicit_code)
+    normalized = normalize_stock_codes_param(explicit_code)
     if normalized:
         return normalized
-    normalized = _normalize_stock_codes_param(query)
+    normalized = normalize_stock_codes_param(query)
     if normalized:
         return normalized
-    return _normalize_stock_codes_param(_extract_single_ticker_from_query(query))
-
-
-def _split_stock_codes(raw: Optional[str]) -> List[str]:
-    """カンマ区切り銘柄コードをリストに分解する。"""
-    normalized = _normalize_stock_codes_param(raw)
-    if not normalized:
-        return []
-    return normalized.split(",")
+    return normalize_stock_codes_param(_extract_single_ticker_from_query(query))
 
 
 def _build_dify_inputs(code: Optional[str], mode: Optional[str] = None) -> Dict[str, str]:
     """Dify Chat-App API の inputs（ワークフロー変数 code / mode）を組み立てる。"""
     inputs: Dict[str, str] = {}
-    normalized = _normalize_stock_codes_param(code)
+    normalized = normalize_stock_codes_param(code)
     if normalized:
         inputs["code"] = normalized
     if mode and mode in RISK_MODES:
@@ -1169,7 +1164,11 @@ async def _local_chat_response(
     fallback: bool = False,
 ) -> Dict[str, Any]:
     """Dify 未設定時 / 障害時のローカル実データ診断応答。"""
-    codes = _split_stock_codes(code) or _split_stock_codes(query)
+    codes = split_stock_codes(code) or split_stock_codes(query)
+    if not codes:
+        single = extract_jp_stock_code(query)
+        if single:
+            codes = [single]
     if len(codes) > 1:
         return await _build_local_multi_diagnosis_response(
             query, codes, conversation_id, mode=mode, fallback=fallback,
@@ -1216,7 +1215,7 @@ async def dify_chat_proxy(payload: DifyChatPayload):
         )
         answer = dify_result.get("answer", "")
         if _is_dify_stub_answer(answer) and dify_code:
-            codes = _split_stock_codes(dify_code)
+            codes = split_stock_codes(dify_code)
             logger.warning(
                 f"Dify 未対応応答を検知 → ローカル実診断に切替: codes={','.join(codes)}"
             )
@@ -1238,16 +1237,66 @@ async def stellar_chat(payload: DifyChatPayload):
     return await dify_chat_proxy(payload)
 
 
+def _probe_dify_workflow() -> Dict[str, Any]:
+    """Dify API へ疎通確認し、ワークフロー成否を返す。"""
+    if not _is_dify_configured():
+        return {
+            "reachable":   False,
+            "workflow_ok": False,
+            "reason":      "not_configured",
+        }
+    try:
+        resp = requests.post(
+            f"{DIFY_BASE_URL}/chat-messages",
+            headers={
+                "Authorization": f"Bearer {DIFY_API_KEY}",
+                "Content-Type":  "application/json",
+            },
+            json={
+                "inputs":        {"code": "7203", "mode": "堅実"},
+                "query":         "7203",
+                "response_mode": "blocking",
+                "user":          "stellar-health-check",
+            },
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        return {
+            "reachable":   False,
+            "workflow_ok": False,
+            "reason":      "connection_error",
+            "message":     str(exc),
+        }
+
+    if resp.status_code >= 400:
+        detail = resp.text[:300]
+        return {
+            "reachable":   True,
+            "workflow_ok": False,
+            "reason":      "workflow_error",
+            "status_code": resp.status_code,
+            "message":     detail,
+        }
+
+    return {"reachable": True, "workflow_ok": True}
+
+
 @app.get("/api/dify/status")
-def dify_status():
+def dify_status(probe: bool = False):
     """Dify / ローカル診断チャットの設定状態を返す（APIキー本体は返さない）。"""
     configured = _is_dify_configured()
-    return {
+    result: Dict[str, Any] = {
         "configured":              configured,
         "local_diagnosis_available": True,
         "mode":                    "dify" if configured else "local",
         "base_url":                DIFY_BASE_URL,
+        "legacy_api_aliases":      ["/api/screen", "/api/diagnose", "/api/v1/diagnose"],
     }
+    if probe and configured:
+        result["probe"] = _probe_dify_workflow()
+        if not result["probe"].get("workflow_ok"):
+            result["mode"] = "local_fallback"
+    return result
 
 
 # ── ヘルスチェック ────────────────────────────────────────────────────────
