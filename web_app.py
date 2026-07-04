@@ -25,6 +25,7 @@ from screener.jp_stock_code import (
     split_stock_codes,
 )
 from screener.jp_stock_names import resolve_jp_display_name
+from screener.fundamentals import fetch_fundamentals, format_fundamentals_lines
 from screener.strategy import StrategyEvaluator
 from screener.notifier import LineNotifier
 from screener import storage
@@ -697,6 +698,7 @@ def _diagnose_ticker(raw_code: str, mode: Optional[str] = None) -> Dict[str, Any
         _apply_risk_mode(evaluator, RISK_MODES[safe_mode])
     result = evaluator.evaluate(yahoo_ticker, name, df)
     metrics = _compute_technical_metrics(df)
+    fundamentals = fetch_fundamentals(yahoo_ticker)
 
     display_code = ticker_code.removesuffix(".T")
     return {
@@ -714,8 +716,11 @@ def _diagnose_ticker(raw_code: str, mode: Optional[str] = None) -> Dict[str, Any
         "buy_signal":          result.get("buy_signal", False),
         "reason":              result.get("reason"),
         "preset_matched":      result.get("preset_matched"),
-        "sector":              result.get("sector"),
+        "sector":              fundamentals.get("sector") or result.get("sector"),
         "trend_status":        _derive_trend_status(result),
+        "fundamentals":        fundamentals,
+        "fundamental_grade":   (fundamentals.get("assessment") or {}).get("grade"),
+        "fundamental_score":   (fundamentals.get("assessment") or {}).get("score"),
     }
 
 
@@ -1016,6 +1021,8 @@ def _format_stellar_answer(screen_data: Dict[str, Any], query: str) -> str:
         preset = screen_data.get("preset_matched", "none")
         preset_labels = {"oshieme": "押し目シグナル", "junbari": "順張りブレイク", "none": "該当なし"}
         lines += [
+            "",
+            "【テクニカル分析】",
             f"リスクモード: {screen_data.get('mode', '堅実')}",
             f"銘柄コード: {screen_data.get('code')}",
             f"銘柄名: {screen_data.get('name', '不明')}",
@@ -1027,8 +1034,17 @@ def _format_stellar_answer(screen_data: Dict[str, Any], query: str) -> str:
             f"シグナル種別: {preset_labels.get(preset, preset)}",
             f"BUY SIGNAL: {'✅ あり' if screen_data.get('buy_signal') else '❌ なし'}",
             f"トレンド判定: {screen_data.get('trend_status', 'WAIT')}",
-            f"診断コメント: {screen_data.get('reason', '—')}",
+            f"テクニカル所見: {screen_data.get('reason', '—')}",
         ]
+        fundamentals = screen_data.get("fundamentals")
+        if fundamentals:
+            lines.extend(format_fundamentals_lines(fundamentals))
+        elif screen_data.get("fundamental_grade"):
+            lines += [
+                "",
+                "【ファンダメンタルズ分析】",
+                f"総合評価: {screen_data.get('fundamental_grade')}",
+            ]
     else:
         mode = screen_data.get("mode", "堅実")
         lines += [
@@ -1069,6 +1085,23 @@ def _build_dify_inputs(code: Optional[str], mode: Optional[str] = None) -> Dict[
     if mode and mode in RISK_MODES:
         inputs["mode"] = mode
     return inputs
+
+
+async def _append_fundamentals_block(answer: str, code: Optional[str]) -> str:
+    """Dify 応答の末尾にファンダメンタルズ分析ブロックを追記する（単一銘柄時）。"""
+    normalized = normalize_stock_codes_param(code)
+    if not normalized or "," in normalized:
+        return answer
+    try:
+        yahoo_ticker = _normalize_ticker_code(normalized.split(",")[0])
+        fundamentals = await asyncio.to_thread(fetch_fundamentals, yahoo_ticker)
+        if not fundamentals.get("available"):
+            return answer
+        block = "\n".join(format_fundamentals_lines(fundamentals))
+        return f"{answer.rstrip()}\n{block}"
+    except Exception as exc:
+        logger.debug("ファンダメンタルズ追記スキップ: %s", exc)
+        return answer
 
 
 def _call_dify_chat_api(
@@ -1240,6 +1273,8 @@ async def dify_chat_proxy(payload: DifyChatPayload):
             return await _local_chat_response(
                 query, dify_code, dify_result.get("conversation_id"), dify_mode, fallback=True,
             )
+        answer = await _append_fundamentals_block(answer, dify_code)
+        dify_result["answer"] = answer
         dify_result["source"] = "dify"
         return dify_result
     except HTTPException as exc:
