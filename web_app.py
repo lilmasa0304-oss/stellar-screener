@@ -1290,8 +1290,8 @@ async def stellar_chat(payload: DifyChatPayload):
     return await dify_chat_proxy(payload)
 
 
-def _probe_dify_workflow() -> Dict[str, Any]:
-    """Dify API へ疎通確認し、ワークフロー成否を返す。"""
+def _probe_dify_api() -> Dict[str, Any]:
+    """Dify API へ軽量疎通確認（GET /parameters）。"""
     if not _is_dify_configured():
         return {
             "reachable":   False,
@@ -1299,19 +1299,10 @@ def _probe_dify_workflow() -> Dict[str, Any]:
             "reason":      "not_configured",
         }
     try:
-        resp = requests.post(
-            f"{DIFY_BASE_URL}/chat-messages",
-            headers={
-                "Authorization": f"Bearer {DIFY_API_KEY}",
-                "Content-Type":  "application/json",
-            },
-            json={
-                "inputs":        {"code": "7203", "mode": "堅実"},
-                "query":         "7203",
-                "response_mode": "blocking",
-                "user":          "stellar-health-check",
-            },
-            timeout=20,
+        resp = requests.get(
+            f"{DIFY_BASE_URL}/parameters",
+            headers={"Authorization": f"Bearer {DIFY_API_KEY}"},
+            timeout=15,
         )
     except requests.RequestException as exc:
         return {
@@ -1322,16 +1313,24 @@ def _probe_dify_workflow() -> Dict[str, Any]:
         }
 
     if resp.status_code >= 400:
-        detail = resp.text[:300]
         return {
-            "reachable":   True,
+            "reachable":   False,
             "workflow_ok": False,
-            "reason":      "workflow_error",
+            "reason":      "api_error",
             "status_code": resp.status_code,
-            "message":     detail,
+            "message":     resp.text[:300],
         }
 
-    return {"reachable": True, "workflow_ok": True}
+    return {
+        "reachable":   True,
+        "workflow_ok": True,
+        "probe_type":  "parameters",
+    }
+
+
+def _probe_dify_workflow() -> Dict[str, Any]:
+    """後方互換エイリアス。"""
+    return _probe_dify_api()
 
 
 @app.get("/api/dify/status")
@@ -1346,8 +1345,8 @@ def dify_status(probe: bool = False):
         "legacy_api_aliases":      ["/api/screen", "/api/diagnose", "/api/v1/diagnose"],
     }
     if probe and configured:
-        result["probe"] = _probe_dify_workflow()
-        if not result["probe"].get("workflow_ok"):
+        result["probe"] = _probe_dify_api()
+        if not result["probe"].get("reachable"):
             result["mode"] = "local_fallback"
     return result
 

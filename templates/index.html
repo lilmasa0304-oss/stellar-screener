@@ -1036,16 +1036,16 @@
             try {
                 const status = await fetch('/api/dify/status?probe=1').then((r) => r.json());
                 const probe = status.probe || {};
-                if (status.configured && probe.workflow_ok) {
+                if (status.configured && probe.reachable) {
                     badge.textContent = 'Dify AI 接続可';
                     badge.className = 'text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded font-bold mono-font';
-                    if (modeLabel) modeLabel.textContent = 'Dify AI + ローカル診断';
-                } else if (status.configured && probe.reachable) {
-                    badge.textContent = 'Dify ワークフロー異常';
+                    if (modeLabel) modeLabel.textContent = 'Dify AI + ローカル診断（テクニカル / ファンダメンタルズ）';
+                } else if (status.configured) {
+                    badge.textContent = 'Dify 接続不可';
                     badge.className = 'text-xs bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded font-bold mono-font';
                     if (modeLabel) modeLabel.textContent = 'ローカル診断で代替中';
                 } else if (status.local_diagnosis_available) {
-                    badge.textContent = status.configured ? 'Dify 接続不可' : 'ローカル診断';
+                    badge.textContent = 'ローカル診断';
                     badge.className = 'text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-2.5 py-1 rounded font-bold mono-font';
                     if (modeLabel) modeLabel.textContent = 'Yahoo Finance 実データ';
                 } else {
