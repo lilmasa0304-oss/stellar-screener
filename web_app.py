@@ -949,11 +949,28 @@ def _extract_single_ticker_from_query(query: str) -> Optional[str]:
     return extract_jp_stock_code(q)
 
 
+def _dify_answer_is_substantial(answer: str) -> bool:
+    """Dify が本文付きの診断を返しているか（注釈のみのスタブでないか）。"""
+    text = (answer or "").strip()
+    if len(text) >= 280:
+        return True
+    indicators = ("RSI", "テクニカル", "診断レポート", "診断", "移動平均", "BUY SIGNAL", "トレンド")
+    hits = sum(1 for key in indicators if key in text)
+    return hits >= 2
+
+
 def _is_dify_stub_answer(answer: str) -> bool:
-    """Dify が未対応銘柄向けに返すプレースホルダー応答か判定する。"""
+    """Dify がプレースホルダーのみ返した場合に True（注釈+本文ありは False）。"""
     if not answer:
         return False
-    return any(marker in answer for marker in _DIFY_STUB_MARKERS)
+    if not any(marker in answer for marker in _DIFY_STUB_MARKERS):
+        return False
+    return not _dify_answer_is_substantial(answer)
+
+
+def _dify_needs_local_enrichment(answer: str) -> bool:
+    """Dify 注釈どおり API 未連携の可能性があり、実データ追記が必要。"""
+    return any(marker in (answer or "") for marker in _DIFY_STUB_MARKERS)
 
 
 def _parse_query_for_screen(query: str) -> Dict[str, Any]:
@@ -1087,6 +1104,30 @@ def _build_dify_inputs(code: Optional[str], mode: Optional[str] = None) -> Dict[
     return inputs
 
 
+async def _append_local_diagnosis_block(
+    answer: str,
+    code: Optional[str],
+    mode: Optional[str],
+    query: str,
+) -> str:
+    """Dify 本文の末尾に STELLAR 実データ診断（テクニカル+ファンダメンタルズ）を追記。"""
+    normalized = normalize_stock_codes_param(code)
+    if not normalized or "," in normalized:
+        return answer
+    single_code = normalized.split(",")[0]
+    try:
+        screen_data = await asyncio.to_thread(_diagnose_ticker, single_code, mode)
+        block = _format_stellar_answer(screen_data, query)
+        return (
+            f"{answer.rstrip()}\n\n"
+            "━━ STELLAR 実データ診断（Yahoo Finance） ━━\n"
+            f"{block}"
+        )
+    except Exception as exc:
+        logger.warning("ローカル診断追記スキップ: %s", exc)
+        return answer
+
+
 async def _append_fundamentals_block(answer: str, code: Optional[str]) -> str:
     """Dify 応答の末尾にファンダメンタルズ分析ブロックを追記する（単一銘柄時）。"""
     normalized = normalize_stock_codes_param(code)
@@ -1141,7 +1182,7 @@ def _call_dify_chat_api(
                 "Content-Type": "application/json",
             },
             json=body,
-            timeout=120,
+            timeout=180,
         )
     except requests.RequestException as e:
         logger.error(f"Dify API 接続エラー: {e}")
@@ -1268,14 +1309,21 @@ async def dify_chat_proxy(payload: DifyChatPayload):
         if _is_dify_stub_answer(answer) and dify_code:
             codes = split_stock_codes(dify_code)
             logger.warning(
-                f"Dify 未対応応答を検知 → ローカル実診断に切替: codes={','.join(codes)}"
+                f"Dify プレースホルダーのみ → ローカル実診断に切替: codes={','.join(codes)}"
             )
             return await _local_chat_response(
                 query, dify_code, dify_result.get("conversation_id"), dify_mode, fallback=True,
             )
-        answer = await _append_fundamentals_block(answer, dify_code)
+        if _dify_needs_local_enrichment(answer) and dify_code:
+            logger.info("Dify 注釈付き応答 → STELLAR 実データ診断を追記")
+            answer = await _append_local_diagnosis_block(
+                answer, dify_code, dify_mode, query,
+            )
+        else:
+            answer = await _append_fundamentals_block(answer, dify_code)
         dify_result["answer"] = answer
         dify_result["source"] = "dify"
+        dify_result["fallback"] = False
         return dify_result
     except HTTPException as exc:
         logger.warning(f"Dify 失敗 → ローカル診断にフォールバック: {exc.detail}")
