@@ -24,6 +24,7 @@ from screener.jp_stock_code import (
     normalize_stock_codes_param,
     split_stock_codes,
 )
+from screener.jp_stock_names import resolve_jp_display_name
 from screener.strategy import StrategyEvaluator
 from screener.notifier import LineNotifier
 from screener import storage
@@ -428,6 +429,19 @@ def _enrich_scan_result(ev: Dict[str, Any]) -> Dict[str, Any]:
     return ev
 
 
+async def _localize_stock_names(items: List[Dict[str, Any]]) -> None:
+    """BUY SIGNAL 銘柄の表示名を日本語に置き換える。"""
+    async def _one(item: Dict[str, Any]) -> None:
+        ticker = item.get("ticker", "")
+        fallback = item.get("name", ticker)
+        item["name"] = await asyncio.to_thread(
+            resolve_jp_display_name, ticker, fallback,
+        )
+
+    if items:
+        await asyncio.gather(*(_one(item) for item in items))
+
+
 def _decorate_buy_signal_rows(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """DB から読んだ buy_signals に preset / reason を付与する。"""
     decorated: List[Dict[str, Any]] = []
@@ -507,6 +521,7 @@ async def _execute_jpx400_realtime_scan(selected_mode: str = "堅実") -> Dict[s
         buy_signals.append(ev)
 
     elapsed = round(time.monotonic() - started, 2)
+    await _localize_stock_names(buy_signals)
     decorated = _decorate_buy_signal_rows(buy_signals)
 
     sent_line = False
@@ -671,7 +686,10 @@ def _diagnose_ticker(raw_code: str, mode: Optional[str] = None) -> Dict[str, Any
             detail=f"銘柄 {ticker_code} のデータが取得できませんでした。",
         )
 
-    name = company_name or f"銘柄コード:{ticker_code}"
+    name = resolve_jp_display_name(
+        yahoo_ticker,
+        company_name or f"銘柄コード:{ticker_code}",
+    )
     config = read_config_yaml()
     evaluator = StrategyEvaluator(config)
     safe_mode = mode if mode in RISK_MODES else None

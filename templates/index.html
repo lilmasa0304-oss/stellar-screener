@@ -3,27 +3,98 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>STELLAR SCREENER V3.0 // 戦術ターミナル</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=JetBrains+Mono:wght@500;700&display=swap');
 
+        :root {
+            --section-gap: 1.25rem;
+        }
+
+        @media (min-width: 768px) {
+            :root {
+                --section-gap: 1.5rem;
+            }
+        }
+
         body {
-            font-family: 'Inter', -apple-system, sans-serif;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
             background: #090d16;
             color: #f1f5f9;
+            font-size: 16px;
+            line-height: 1.6;
+            -webkit-text-size-adjust: 100%;
         }
 
         .mono-font {
-            font-family: 'JetBrains Mono', monospace;
+            font-family: 'JetBrains Mono', ui-monospace, monospace;
         }
 
         .neon-card {
             background: #0f1626;
             border: 1px solid #1e293b;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+        }
+
+        .section-card {
+            border-radius: 1rem;
+            padding: 1.25rem;
+        }
+
+        @media (min-width: 768px) {
+            .section-card {
+                border-radius: 1.25rem;
+                padding: 1.5rem;
+            }
+        }
+
+        .section-heading {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            padding-bottom: 0.875rem;
+            margin-bottom: 1rem;
+            border-bottom: 1px solid #1e293b;
+        }
+
+        .section-icon {
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-size: 1rem;
+        }
+
+        .section-title {
+            font-size: 1.125rem;
+            font-weight: 800;
+            line-height: 1.35;
+            letter-spacing: 0.01em;
+        }
+
+        @media (min-width: 768px) {
+            .section-title {
+                font-size: 1.25rem;
+            }
+        }
+
+        .section-desc {
+            font-size: 0.875rem;
+            color: #94a3b8;
+            line-height: 1.65;
+            margin-top: 0.25rem;
+        }
+
+        @media (min-width: 768px) {
+            .section-desc {
+                font-size: 0.8125rem;
+            }
         }
 
         .risk-mode-active {
@@ -34,7 +105,14 @@
         }
 
         .chat-scroll {
-            max-height: 420px;
+            max-height: min(52vh, 480px);
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: #334155 transparent;
+        }
+
+        .scan-results-scroll {
+            max-height: min(60vh, 520px);
             overflow-y: auto;
             scrollbar-width: thin;
             scrollbar-color: #334155 transparent;
@@ -51,6 +129,15 @@
             50% { opacity: 0; }
         }
 
+        @keyframes scan-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.55; }
+        }
+
+        .scan-loading-pulse {
+            animation: scan-pulse 1.4s ease-in-out infinite;
+        }
+
         .watchlist-badge {
             transition: all 0.2s ease;
         }
@@ -60,267 +147,342 @@
             box-shadow: 0 0 12px rgba(34, 211, 238, 0.08);
         }
 
-        .watchlist-remove {
-            transition: color 0.15s ease, transform 0.15s ease;
-        }
-
         .watchlist-remove:hover {
             color: #f472b6;
             transform: scale(1.15);
         }
+
+        .hit-card {
+            padding: 1rem 1.125rem;
+        }
+
+        @media (min-width: 768px) {
+            .hit-card {
+                padding: 1rem 1.25rem;
+            }
+        }
+
+        .chat-bubble {
+            font-size: 0.9375rem;
+            line-height: 1.75;
+        }
+
+        @media (min-width: 768px) {
+            .chat-bubble {
+                font-size: 0.875rem;
+                line-height: 1.65;
+            }
+        }
     </style>
 </head>
 
-<body class="p-4 md:p-6 min-h-screen selection:bg-emerald-500 selection:text-black">
+<body class="px-4 py-5 md:px-6 md:py-8 min-h-screen selection:bg-emerald-500 selection:text-black">
 
-    <div class="max-w-5xl mx-auto space-y-6">
+    <div class="max-w-5xl mx-auto space-y-5 md:space-y-6">
 
-        <div
-            class="neon-card rounded-2xl p-6 flex flex-col md:flex-row justify-between items-start md:items-center border-l-4 border-l-cyan-400 gap-4">
+        <!-- ヘッダー -->
+        <header
+            class="neon-card rounded-2xl p-5 md:p-6 flex flex-col md:flex-row justify-between items-start md:items-center border-l-4 border-l-cyan-400 gap-4">
             <div>
                 <h1
-                    class="text-2xl font-black tracking-wider mono-font text-transparent bg-clip-text bg-gradient-to-r from-slate-100 to-cyan-400 uppercase">
+                    class="text-2xl md:text-3xl font-black tracking-wide mono-font text-transparent bg-clip-text bg-gradient-to-r from-slate-100 to-cyan-400 uppercase">
                     STELLAR SCREENER
                 </h1>
-                <p class="text-xs text-cyan-400 font-semibold tracking-wide mt-1">
+                <p class="text-sm md:text-xs text-cyan-400 font-semibold tracking-wide mt-1.5">
                     JPX日経400 // リアルタイム・スクリーニング・ターミナル
                 </p>
             </div>
-            <div class="flex items-center gap-3 text-xs bg-slate-900/60 px-4 py-2.5 rounded-xl border border-slate-800">
+            <div
+                class="flex flex-wrap items-center gap-2 text-sm md:text-xs bg-slate-900/60 px-4 py-3 rounded-xl border border-slate-800 w-full md:w-auto">
                 <span class="flex items-center gap-1.5"><span
                         class="w-2 h-2 rounded-full bg-pink-500 animate-pulse"></span> LINE通知: 有効</span>
-                <span class="text-slate-500">|</span>
-                <span class="text-slate-400 font-medium" id="next-scan-label">次回自動スキャン: 読込中...</span>
+                <span class="text-slate-600 hidden sm:inline">|</span>
+                <span class="text-slate-300 font-medium" id="next-scan-label">次回自動スキャン: 読込中...</span>
             </div>
-        </div>
+        </header>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <button onclick="changeStrategy('oshime')" id="strat-oshime"
-                class="neon-card rounded-xl p-5 text-left transition-all duration-300 border border-emerald-500/50 bg-gradient-to-br from-emerald-950/20 to-transparent shadow-[0_0_15px_rgba(16,185,129,0.1)] cursor-pointer focus:outline-none">
-                <div class="flex justify-between items-center mb-1.5">
-                    <span class="text-emerald-400 font-bold tracking-wide text-sm mono-font">[01]
-                        押し目シグナル・モード</span>
-                    <i class="fa-solid fa-chart-line text-emerald-400 text-sm"></i>
+        <!-- ① 戦略モード -->
+        <section class="neon-card section-card border-t-2 border-t-slate-700/80">
+            <div class="section-heading">
+                <div class="section-icon bg-slate-800/80 border border-slate-700 text-emerald-400">
+                    <i class="fa-solid fa-sliders"></i>
                 </div>
-                <p class="text-xs text-slate-300 leading-relaxed font-medium">
-                    長期MA75上昇トレンド下での短期RSI売られすぎ、およびボリンジャーバンド-2σタッチを厳格にスクリーニング。
-                </p>
-            </button>
-
-            <button onclick="changeStrategy('junbari')" id="strat-junbari"
-                class="neon-card rounded-xl p-5 text-left transition-all duration-300 border border-slate-800/80 opacity-60 cursor-pointer focus:outline-none hover:opacity-90">
-                <div class="flex justify-between items-center mb-1.5">
-                    <span class="text-slate-400 font-bold tracking-wide text-sm mono-font">[02]
-                        順張りブレイク・モード</span>
-                    <i class="fa-solid fa-bolt text-slate-500 text-sm"></i>
+                <div>
+                    <h2 class="section-title text-slate-100">① 戦略モード選択</h2>
+                    <p class="section-desc">押し目シグナル / 順張りブレイクのどちらでスキャンするか選びます。</p>
                 </div>
-                <p class="text-xs text-slate-400 leading-relaxed font-medium">
-                    MA5×MA25のゴールデンクロス初動。出来高が過去平均1.7倍以上の大口流入トレンドのみを完全追随。
-                </p>
-            </button>
-        </div>
+            </div>
 
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
+                <button onclick="changeStrategy('oshime')" id="strat-oshime"
+                    class="neon-card rounded-xl p-4 md:p-5 text-left transition-all duration-300 border border-emerald-500/50 bg-gradient-to-br from-emerald-950/20 to-transparent shadow-[0_0_15px_rgba(16,185,129,0.1)] cursor-pointer focus:outline-none">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-emerald-400 font-bold text-sm md:text-xs mono-font">押し目シグナル・モード</span>
+                        <i class="fa-solid fa-chart-line text-emerald-400"></i>
+                    </div>
+                    <p class="text-sm md:text-xs text-slate-300 leading-relaxed">
+                        長期MA75上昇トレンド下での短期RSI売られすぎ、およびボリンジャーバンド-2σタッチを厳格にスクリーニング。
+                    </p>
+                </button>
 
-            <div class="lg:col-span-2 neon-card rounded-2xl p-6 space-y-6">
-                <div class="border-b border-slate-800 pb-3 flex justify-between items-center">
-                    <h2 class="text-sm font-bold text-slate-300 flex items-center gap-2 tracking-wide">
-                        <span class="text-cyan-400">┃</span> 制御コンソール
-                    </h2>
-                    <span
-                        class="text-[10px] bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-bold text-slate-400 mono-font">機関投資家向けフィルター</span>
+                <button onclick="changeStrategy('junbari')" id="strat-junbari"
+                    class="neon-card rounded-xl p-4 md:p-5 text-left transition-all duration-300 border border-slate-800/80 opacity-60 cursor-pointer focus:outline-none hover:opacity-90">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-slate-400 font-bold text-sm md:text-xs mono-font">順張りブレイク・モード</span>
+                        <i class="fa-solid fa-bolt text-slate-500"></i>
+                    </div>
+                    <p class="text-sm md:text-xs text-slate-400 leading-relaxed">
+                        MA5×MA25のゴールデンクロス初動。出来高が過去平均1.7倍以上の大口流入トレンドのみを完全追随。
+                    </p>
+                </button>
+            </div>
+        </section>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-5 md:gap-6">
+
+            <!-- 左: フィルター設定 -->
+            <div class="lg:col-span-2 neon-card section-card border-t-2 border-t-slate-700/80">
+                <div class="section-heading">
+                    <div class="section-icon bg-slate-800/80 border border-slate-700 text-cyan-400">
+                        <i class="fa-solid fa-filter"></i>
+                    </div>
+                    <div>
+                        <h2 class="section-title text-slate-100">スキャン条件・フィルター</h2>
+                        <p class="section-desc">RSI しきい値とプレミアム品質フィルターを調整します。</p>
+                    </div>
                 </div>
 
                 <div class="space-y-5">
                     <div>
-                        <div class="flex justify-between items-center mb-2 text-xs font-bold">
-                            <span class="text-slate-400">RSI 売られすぎ検出レベル</span>
+                        <div class="flex justify-between items-center mb-2 text-sm md:text-xs font-bold">
+                            <span class="text-slate-300">RSI 売られすぎ検出レベル</span>
                             <span
-                                class="text-emerald-400 bg-emerald-950/40 border border-emerald-500/20 px-2 py-0.5 rounded mono-font">30</span>
+                                class="text-emerald-400 bg-emerald-950/40 border border-emerald-500/20 px-2.5 py-1 rounded mono-font">30</span>
                         </div>
                         <input type="range" min="10" max="50" value="30"
-                            class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500">
+                            class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500">
                     </div>
 
                     <div>
-                        <div class="flex justify-between items-center mb-2 text-xs font-bold">
-                            <span class="text-slate-400">RSI 買われすぎ検出レベル</span>
+                        <div class="flex justify-between items-center mb-2 text-sm md:text-xs font-bold">
+                            <span class="text-slate-300">RSI 買われすぎ検出レベル</span>
                             <span
-                                class="text-pink-500 bg-pink-950/40 border border-pink-500/20 px-2 py-0.5 rounded mono-font">70</span>
+                                class="text-pink-500 bg-pink-950/40 border border-pink-500/20 px-2.5 py-1 rounded mono-font">70</span>
                         </div>
                         <input type="range" min="50" max="90" value="70"
-                            class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-pink-500">
+                            class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-pink-500">
                     </div>
 
                     <div>
-                        <div class="flex justify-between items-center mb-2 text-xs font-bold">
-                            <span class="text-slate-400">✨ スイング BUY SIGNAL 条件 (RSI反発帯上限)</span>
+                        <div class="flex justify-between items-center mb-2 text-sm md:text-xs font-bold">
+                            <span class="text-slate-300">スイング BUY SIGNAL 条件 (RSI反発帯上限)</span>
                             <span
-                                class="text-amber-400 bg-amber-950/40 border border-amber-500/20 px-2 py-0.5 rounded mono-font"
+                                class="text-amber-400 bg-amber-950/40 border border-amber-500/20 px-2.5 py-1 rounded mono-font"
                                 id="rsi-val">23</span>
                         </div>
                         <input type="range" min="15" max="45" value="23" id="rsi-slider"
-                            class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500">
+                            class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500">
                     </div>
                 </div>
 
-                <div class="pt-2 space-y-4">
-                    <h3 class="text-xs font-bold text-cyan-400 flex items-center gap-1.5 tracking-wide">
-                        <i class="fa-solid fa-bolt text-[11px]"></i> プレミアムクオリティ・フィルター
+                <div class="mt-6 pt-5 border-t border-slate-800 space-y-3">
+                    <h3 class="text-sm font-bold text-cyan-400 flex items-center gap-2">
+                        <i class="fa-solid fa-shield-halved"></i> プレミアムクオリティ・フィルター
                     </h3>
 
-                    <div class="space-y-3">
-                        <div
-                            class="bg-slate-900/50 border border-slate-800/60 p-4 rounded-xl flex justify-between items-center">
-                            <div>
-                                <h4 class="text-xs font-bold text-slate-200">時価総額クオリティ・足切り（フィルター自動適用）</h4>
-                                <p class="text-[11px] text-slate-500 mt-0.5 font-medium">ON:
-                                    時価総額500億円以上の中大型株のみに限定し、仕手株・ボロ株を除外</p>
-                            </div>
-                            <label class="relative inline-flex items-center cursor-pointer">
-                                <input type="checkbox" checked class="sr-only peer">
-                                <div
-                                    class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-slate-300 after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500 peer-checked:after:bg-white">
-                                </div>
-                            </label>
+                    <div
+                        class="bg-slate-900/50 border border-slate-800/60 p-4 rounded-xl flex justify-between items-center gap-4">
+                        <div class="min-w-0">
+                            <h4 class="text-sm font-bold text-slate-200">時価総額クオリティ・足切り</h4>
+                            <p class="text-sm md:text-xs text-slate-400 mt-1 leading-relaxed">時価総額500億円以上の中大型株のみに限定</p>
                         </div>
+                        <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                            <input type="checkbox" checked class="sr-only peer">
+                            <div
+                                class="w-12 h-7 bg-slate-800 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[3px] after:start-[3px] after:bg-slate-300 after:rounded-full after:h-[22px] after:w-[22px] after:transition-all peer-checked:bg-emerald-500 peer-checked:after:bg-white">
+                            </div>
+                        </label>
+                    </div>
 
-                        <div
-                            class="bg-slate-900/50 border border-slate-800/60 p-4 rounded-xl flex justify-between items-center">
-                            <div>
-                                <h4 class="text-xs font-bold text-slate-200">5日平均売買代金制限（流動性リスク防止）</h4>
-                                <p class="text-[11px] text-slate-500 mt-0.5 font-medium">ON:
-                                    直近売買代金が5億円未満の薄商い銘柄を排除し、スリッページを防止</p>
-                            </div>
-                            <label class="relative inline-flex items-center cursor-pointer">
-                                <input type="checkbox" checked class="sr-only peer">
-                                <div
-                                    class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-slate-300 after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500 peer-checked:after:bg-white">
-                                </div>
-                            </label>
+                    <div
+                        class="bg-slate-900/50 border border-slate-800/60 p-4 rounded-xl flex justify-between items-center gap-4">
+                        <div class="min-w-0">
+                            <h4 class="text-sm font-bold text-slate-200">5日平均売買代金制限</h4>
+                            <p class="text-sm md:text-xs text-slate-400 mt-1 leading-relaxed">薄商い銘柄を排除しスリッページを防止</p>
                         </div>
+                        <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                            <input type="checkbox" checked class="sr-only peer">
+                            <div
+                                class="w-12 h-7 bg-slate-800 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[3px] after:start-[3px] after:bg-slate-300 after:rounded-full after:h-[22px] after:w-[22px] after:transition-all peer-checked:bg-emerald-500 peer-checked:after:bg-white">
+                            </div>
+                        </label>
                     </div>
                 </div>
             </div>
 
-            <div class="space-y-6">
-                <div class="neon-card rounded-2xl p-6 space-y-4">
-                    <div class="text-xs font-bold text-slate-400 flex items-center gap-2 tracking-wide">
-                        <i class="fa-solid fa-satellite-dish text-cyan-400"></i> ライブ監査コントローラー
+            <!-- 右: ウォッチリスト -->
+            <section class="neon-card section-card border-t-2 border-t-cyan-500/30 space-y-4">
+                <div class="section-heading mb-0 pb-3">
+                    <div class="section-icon bg-cyan-950/50 border border-cyan-800/50 text-cyan-400">
+                        <i class="fa-regular fa-bookmark"></i>
                     </div>
-
-                    <div class="space-y-2">
-                        <p class="text-[11px] font-bold text-slate-500">リスク許容度モード</p>
-                        <div class="grid grid-cols-3 gap-2" id="risk-mode-group">
-                            <button type="button" data-mode="堅実" onclick="selectRiskMode('堅実')"
-                                class="risk-mode-btn neon-card rounded-lg py-2.5 text-xs font-bold border border-emerald-500/50 risk-mode-active transition-all">
-                                堅実
-                            </button>
-                            <button type="button" data-mode="標準" onclick="selectRiskMode('標準')"
-                                class="risk-mode-btn neon-card rounded-lg py-2.5 text-xs font-bold border border-slate-800 opacity-70 hover:opacity-100 transition-all text-slate-300">
-                                標準
-                            </button>
-                            <button type="button" data-mode="積極" onclick="selectRiskMode('積極')"
-                                class="risk-mode-btn neon-card rounded-lg py-2.5 text-xs font-bold border border-slate-800 opacity-70 hover:opacity-100 transition-all text-slate-300">
-                                積極
-                            </button>
+                    <div class="flex-1 min-w-0">
+                        <div class="flex justify-between items-start gap-2">
+                            <h2 class="section-title text-slate-100">③ ウォッチリスト</h2>
+                            <span id="watchlist-count"
+                                class="text-xs bg-slate-900 text-slate-400 border border-slate-800 px-2.5 py-1 rounded font-bold mono-font shrink-0">0 銘柄</span>
                         </div>
+                        <p class="section-desc">気になる銘柄を登録し、ワンタップで AI 診断できます。</p>
                     </div>
+                </div>
 
-                    <button id="scan-btn" onclick="startJpx400Scan()"
-                        class="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-400 text-slate-900 font-extrabold py-3.5 px-4 rounded-xl shadow-[0_4px_15px_rgba(16,185,129,0.25)] transition-all duration-200 text-xs tracking-wider flex items-center justify-center gap-2 cursor-pointer border-t border-emerald-400/20 disabled:cursor-not-allowed">
-                        <i class="fa-solid fa-radar text-xs" id="scan-btn-icon"></i>
-                        <span id="scan-btn-label">JPX400 スキャン開始</span>
+                <div id="watchlist-area"
+                    class="min-h-[88px] rounded-xl border border-dashed border-slate-800/80 bg-slate-900/30 p-4">
+                    <div id="watchlist-empty"
+                        class="flex flex-col items-center justify-center text-center py-3 px-2">
+                        <i class="fa-regular fa-bookmark text-slate-600 text-lg mb-2"></i>
+                        <p class="text-sm text-slate-400 leading-relaxed">
+                            銘柄が登録されていません。<br>コードを入力して追加してください。
+                        </p>
+                    </div>
+                    <div id="watchlist-badges" class="hidden flex flex-wrap gap-2 text-sm font-bold mono-font"></div>
+                </div>
+
+                <div class="flex gap-2">
+                    <input type="text" id="watchlist-input" placeholder="例: 9101 / 285A"
+                        class="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-base md:text-sm focus:outline-none focus:border-cyan-500 text-slate-200 mono-font min-h-[48px]"
+                        onkeydown="if(event.key==='Enter') addWatchlistTicker()">
+                    <button type="button" onclick="addWatchlistTicker()" id="watchlist-add-btn"
+                        class="bg-cyan-800 hover:bg-cyan-700 disabled:bg-slate-700 text-white font-bold px-5 py-3 rounded-xl text-sm transition-colors shrink-0 min-h-[48px]">
+                        追加
                     </button>
-                    <p class="text-[10px] text-slate-500 leading-relaxed" id="scan-status">JPX日経インデックス400（約400銘柄）をリアルタイムスキャンし、押し目・順張りブレイクを検出します。</p>
                 </div>
-
-                <div class="neon-card rounded-2xl p-6 space-y-4">
-                    <div class="flex justify-between items-center">
-                        <div class="text-xs font-bold text-slate-400 tracking-wide">
-                            コア・ウォッチリスト
-                        </div>
-                        <span id="watchlist-count"
-                            class="text-[10px] bg-slate-900 text-slate-500 border border-slate-800 px-2 py-0.5 rounded font-bold mono-font">0 銘柄</span>
-                    </div>
-
-                    <div id="watchlist-area"
-                        class="min-h-[72px] rounded-xl border border-dashed border-slate-800/80 bg-slate-900/30 p-3">
-                        <div id="watchlist-empty"
-                            class="flex flex-col items-center justify-center text-center py-4 px-2">
-                            <i class="fa-regular fa-bookmark text-slate-600 text-sm mb-2"></i>
-                            <p class="text-[11px] text-slate-500 leading-relaxed">
-                                ウォッチリストに銘柄が登録されていません。<br>
-                                コードを入力して追加してください。
-                            </p>
-                        </div>
-                        <div id="watchlist-badges" class="hidden flex flex-wrap gap-2 text-xs font-bold mono-font"></div>
-                    </div>
-
-                    <div class="flex gap-2">
-                        <input type="text" id="watchlist-input" placeholder="コード追加（例: 9101 / 285A）"
-                            class="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-cyan-500 font-medium text-slate-300 mono-font"
-                            onkeydown="if(event.key==='Enter') addWatchlistTicker()">
-                        <button type="button" onclick="addWatchlistTicker()" id="watchlist-add-btn"
-                            class="bg-cyan-800 hover:bg-cyan-700 disabled:bg-slate-700 text-white font-bold px-4 py-2.5 rounded-xl text-xs transition-colors shrink-0">
-                            追加
-                        </button>
-                    </div>
-                    <p id="watchlist-feedback" class="text-[10px] text-slate-500 min-h-[14px]"></p>
-                </div>
-            </div>
+                <p id="watchlist-feedback" class="text-sm text-slate-500 min-h-[1.25rem]"></p>
+            </section>
         </div>
 
-        <div id="market-scan-panel" class="neon-card rounded-2xl p-6 space-y-4 border-t border-t-emerald-500/20">
-            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-                <h2 class="text-sm font-bold text-emerald-400 flex items-center gap-2">
-                    <i class="fa-solid fa-bullseye"></i> JPX400 スキャン結果
-                </h2>
-                <span id="scan-progress-label" class="text-[10px] text-slate-500 mono-font">待機中</span>
-            </div>
-            <div id="scan-progress-bar-wrap" class="hidden h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
-                <div id="scan-progress-bar" class="h-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all duration-300" style="width:0%"></div>
-            </div>
-            <div id="scan-hits-empty"
-                class="text-[11px] text-slate-500 text-center py-6 px-4 rounded-xl border border-dashed border-slate-800/80 bg-slate-900/20 leading-relaxed">
-                リスクモードを選んで「JPX400 スキャン開始」を押してください。<br>
-                約400銘柄から <span class="text-emerald-400">押し目</span> / <span class="text-cyan-400">順張りブレイク</span> をリアルタイム検出し、各行から Dify AI 診断ができます。
-            </div>
-            <div id="scan-hits-list" class="hidden space-y-2 max-h-[360px] overflow-y-auto chat-scroll"></div>
-        </div>
-
-        <div id="chat-container"
-            class="neon-card rounded-2xl p-6 border-t border-t-cyan-500/30 bg-gradient-to-b from-cyan-950/5 to-transparent space-y-4">
-            <div class="flex justify-between items-center border-b border-slate-800 pb-3">
-                <h2 class="text-sm font-bold text-cyan-400 flex items-center gap-2 tracking-wide">
-                    <i class="fa-solid fa-comments"></i> STELLAR 診断チャット
-                    <span id="dify-mode-label" class="text-[10px] text-slate-500 font-normal">接続確認中</span>
-                </h2>
-                <span id="dify-status-badge"
-                    class="text-[9px] bg-slate-900 text-slate-400 border border-slate-700 px-2 py-0.5 rounded font-bold mono-font">接続確認中</span>
+        <!-- ② JPX400 自動株価スキャン（一体型） -->
+        <section class="neon-card section-card border-t-2 border-t-emerald-500/40 space-y-5">
+            <div class="section-heading mb-0">
+                <div class="section-icon bg-emerald-950/50 border border-emerald-800/50 text-emerald-400">
+                    <i class="fa-solid fa-radar"></i>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <h2 class="section-title text-emerald-400">② JPX400 自動株価スキャン</h2>
+                    <p class="section-desc">約400銘柄をリアルタイム走査し、BUY SIGNAL をその場で表示します。</p>
+                </div>
             </div>
 
-            <div id="chat-messages" class="chat-scroll space-y-3 min-h-[200px]">
+            <div class="space-y-3">
+                <p class="text-sm font-bold text-slate-400">リスク許容度モード</p>
+                <div class="grid grid-cols-3 gap-2 md:gap-3" id="risk-mode-group">
+                    <button type="button" data-mode="堅実" onclick="selectRiskMode('堅実')"
+                        class="risk-mode-btn neon-card rounded-xl py-3.5 text-sm md:text-xs font-bold border border-emerald-500/50 risk-mode-active transition-all min-h-[48px]">
+                        堅実
+                    </button>
+                    <button type="button" data-mode="標準" onclick="selectRiskMode('標準')"
+                        class="risk-mode-btn neon-card rounded-xl py-3.5 text-sm md:text-xs font-bold border border-slate-800 opacity-70 hover:opacity-100 transition-all text-slate-300 min-h-[48px]">
+                        標準
+                    </button>
+                    <button type="button" data-mode="積極" onclick="selectRiskMode('積極')"
+                        class="risk-mode-btn neon-card rounded-xl py-3.5 text-sm md:text-xs font-bold border border-slate-800 opacity-70 hover:opacity-100 transition-all text-slate-300 min-h-[48px]">
+                        積極
+                    </button>
+                </div>
+            </div>
+
+            <button id="scan-btn" onclick="startJpx400Scan()"
+                class="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-400 text-slate-900 font-extrabold py-4 px-4 rounded-xl shadow-[0_4px_15px_rgba(16,185,129,0.25)] transition-all duration-200 text-base md:text-sm tracking-wide flex items-center justify-center gap-2.5 cursor-pointer border-t border-emerald-400/20 disabled:cursor-not-allowed min-h-[52px]">
+                <i class="fa-solid fa-radar text-base" id="scan-btn-icon"></i>
+                <span id="scan-btn-label">JPX400 スキャン開始</span>
+            </button>
+
+            <!-- インライン: ローディング + 結果 -->
+            <div id="scan-inline-zone"
+                class="rounded-xl border border-slate-800/80 bg-slate-900/30 overflow-hidden">
+                <div id="scan-idle-hint"
+                    class="text-sm text-slate-400 text-center py-8 px-5 leading-relaxed">
+                    リスクモードを選び「スキャン開始」を押すと、<strong class="text-slate-300">このエリア</strong>に進捗と結果が表示されます。
+                </div>
+
+                <div id="scan-loading" class="hidden py-8 px-5 text-center space-y-4">
+                    <div class="inline-flex items-center justify-center w-14 h-14 rounded-full bg-emerald-950/60 border border-emerald-800/50 scan-loading-pulse">
+                        <i class="fa-solid fa-spinner fa-spin text-2xl text-emerald-400"></i>
+                    </div>
+                    <div>
+                        <p class="text-base font-bold text-emerald-400" id="scan-loading-title">JPX400 をスキャン中...</p>
+                        <p class="text-sm text-slate-400 mt-2 leading-relaxed" id="scan-loading-desc">約400銘柄を並列処理しています。しばらくお待ちください。</p>
+                    </div>
+                    <div class="h-2.5 bg-slate-800 rounded-full overflow-hidden max-w-md mx-auto">
+                        <div class="h-full w-full bg-gradient-to-r from-emerald-500 to-cyan-500 animate-pulse"></div>
+                    </div>
+                </div>
+
+                <div id="scan-results-wrap" class="hidden border-t border-slate-800/60">
+                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 py-3 bg-slate-900/40 border-b border-slate-800/60">
+                        <h3 class="text-sm font-bold text-emerald-400 flex items-center gap-2">
+                            <i class="fa-solid fa-bullseye"></i> スキャン結果
+                        </h3>
+                        <span id="scan-progress-label" class="text-sm text-slate-400 mono-font">待機中</span>
+                    </div>
+                    <div id="scan-hits-empty"
+                        class="text-sm text-slate-400 text-center py-10 px-5 leading-relaxed">
+                        結果がここに表示されます。
+                    </div>
+                    <div id="scan-hits-list" class="hidden scan-results-scroll p-3 md:p-4 space-y-3"></div>
+                </div>
+            </div>
+
+            <p class="text-sm text-slate-500 leading-relaxed" id="scan-status">
+                JPX日経インデックス400（約400銘柄）をリアルタイムスキャンし、押し目・順張りブレイクを検出します。
+            </p>
+        </section>
+
+        <!-- ④ AI 診断チャット -->
+        <section id="chat-container"
+            class="neon-card section-card border-t-2 border-t-cyan-500/40 bg-gradient-to-b from-cyan-950/5 to-transparent space-y-4">
+            <div class="section-heading mb-0 pb-3">
+                <div class="section-icon bg-cyan-950/50 border border-cyan-800/50 text-cyan-400">
+                    <i class="fa-solid fa-comments"></i>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <div class="flex flex-wrap justify-between items-start gap-2">
+                        <h2 class="section-title text-cyan-400">④ テクニカル AI 診断チャット</h2>
+                        <span id="dify-status-badge"
+                            class="text-xs bg-slate-900 text-slate-400 border border-slate-700 px-2.5 py-1 rounded font-bold mono-font">接続確認中</span>
+                    </div>
+                    <p class="section-desc">
+                        銘柄コードやリスクモードを入力すると、Yahoo Finance 実データでテクニカル診断します。
+                        <span id="dify-mode-label" class="text-cyan-500/80">接続確認中</span>
+                    </p>
+                </div>
+            </div>
+
+            <div id="chat-messages" class="chat-scroll space-y-4 min-h-[220px]">
                 <div class="flex gap-3 items-start">
-                    <div class="w-8 h-8 rounded-lg bg-emerald-950 border border-emerald-800 flex items-center justify-center shrink-0">
-                        <i class="fa-solid fa-star text-emerald-400 text-xs"></i>
+                    <div
+                        class="w-10 h-10 rounded-xl bg-emerald-950 border border-emerald-800 flex items-center justify-center shrink-0">
+                        <i class="fa-solid fa-star text-emerald-400"></i>
                     </div>
-                    <div class="bg-slate-900/70 border border-slate-800 rounded-xl rounded-tl-sm px-4 py-3 text-xs text-slate-300 leading-relaxed max-w-[90%]">
-                        銘柄コード（例: <span class="mono-font text-cyan-400">7203</span> / <span class="mono-font text-cyan-400">285A</span>）やリスクモード（<span class="text-emerald-400">堅実</span>）を入力すると、Yahoo Finance の実データでテクニカル診断します。JPX400 スキャン結果の「AI診断」ボタンからも利用できます。
+                    <div
+                        class="chat-bubble bg-slate-900/70 border border-slate-800 rounded-xl rounded-tl-sm px-4 py-3.5 text-slate-200 max-w-[92%]">
+                        銘柄コード（例: <span class="mono-font text-cyan-400">7203</span> / <span
+                            class="mono-font text-cyan-400">285A</span>）やリスクモード（<span
+                            class="text-emerald-400">堅実</span>）を入力すると診断します。スキャン結果の「AI診断」ボタンからも利用できます。
                     </div>
                 </div>
             </div>
 
-            <div class="flex gap-2 pt-2 border-t border-slate-800/60">
+            <div class="flex gap-2 pt-3 border-t border-slate-800/60">
                 <input type="text" id="chat-input" placeholder="例: 285A / 堅実 / 1605を判断して"
-                    class="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-cyan-500 text-slate-200"
+                    class="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3.5 text-base md:text-sm focus:outline-none focus:border-cyan-500 text-slate-200 min-h-[48px]"
                     onkeydown="if(event.key==='Enter') sendChatMessage()">
                 <button onclick="sendChatMessage()" id="chat-send-btn"
-                    class="bg-cyan-700 hover:bg-cyan-600 disabled:bg-slate-700 text-white font-bold px-4 py-2.5 rounded-xl text-xs transition-colors">
+                    class="bg-cyan-700 hover:bg-cyan-600 disabled:bg-slate-700 text-white font-bold px-5 py-3.5 rounded-xl text-sm transition-colors min-h-[48px] shrink-0">
                     送信
                 </button>
             </div>
-        </div>
+        </section>
 
     </div>
 
@@ -416,8 +578,8 @@
             const el = document.getElementById('watchlist-feedback');
             el.textContent = message;
             el.className = isError
-                ? 'text-[10px] text-pink-400 min-h-[14px]'
-                : 'text-[10px] text-slate-500 min-h-[14px]';
+                ? 'text-sm text-pink-400 min-h-[1.25rem]'
+                : 'text-sm text-slate-500 min-h-[1.25rem]';
         }
 
         function renderWatchlist() {
@@ -440,18 +602,18 @@
             watchlistTickers.forEach((ticker) => {
                 const badge = document.createElement('span');
                 badge.className =
-                    'watchlist-badge bg-cyan-950/60 border border-cyan-800/50 text-cyan-400 px-2.5 py-1.5 rounded-lg flex items-center gap-2';
+                    'watchlist-badge bg-cyan-950/60 border border-cyan-800/50 text-cyan-400 px-3 py-2 rounded-lg flex items-center gap-2';
                 badge.innerHTML = `
                     <span>${escapeHtml(ticker)}</span>
                     <button type="button" onclick="diagnoseWatchlistTicker('${ticker}')"
-                        class="text-cyan-500/80 hover:text-cyan-300 text-[10px] font-bold px-1"
+                        class="text-cyan-500/80 hover:text-cyan-300 text-xs font-bold px-1 min-h-[28px]"
                         aria-label="${ticker} を AI 診断">
                         AI
                     </button>
                     <button type="button" onclick="removeWatchlistTicker('${ticker}')"
-                        class="watchlist-remove text-pink-500/80 hover:text-pink-400 leading-none"
+                        class="watchlist-remove text-pink-500/80 hover:text-pink-400 leading-none min-h-[28px]"
                         aria-label="${ticker} を削除">
-                        <i class="fa-solid fa-xmark text-[10px]"></i>
+                        <i class="fa-solid fa-xmark text-xs"></i>
                     </button>
                 `;
                 badgesEl.appendChild(badge);
@@ -549,42 +711,64 @@
             return Number(value).toFixed(2);
         }
 
+        function formatPrice(value) {
+            if (value == null || Number.isNaN(Number(value))) return '—';
+            return Number(value).toLocaleString('ja-JP');
+        }
+
+        function displayTickerCode(ticker) {
+            return (ticker || '').replace(/\.T$/i, '');
+        }
+
         function signalBadgeClass(preset) {
             if (preset === 'oshieme') return 'bg-emerald-950/60 text-emerald-400 border-emerald-800/50';
             if (preset === 'junbari') return 'bg-cyan-950/60 text-cyan-400 border-cyan-800/50';
             return 'bg-slate-900 text-slate-400 border-slate-700';
         }
 
+        function showScanIdle() {
+            document.getElementById('scan-idle-hint').classList.remove('hidden');
+            document.getElementById('scan-loading').classList.add('hidden');
+            document.getElementById('scan-results-wrap').classList.add('hidden');
+        }
+
+        function showScanLoading(mode) {
+            document.getElementById('scan-idle-hint').classList.add('hidden');
+            document.getElementById('scan-loading').classList.remove('hidden');
+            document.getElementById('scan-results-wrap').classList.add('hidden');
+            document.getElementById('scan-loading-title').textContent = `【${mode}】JPX400 をスキャン中...`;
+            document.getElementById('scan-loading-desc').textContent =
+                '約400銘柄を並列処理しています。完了までこの画面から移動しません。';
+        }
+
+        function showScanResults() {
+            document.getElementById('scan-idle-hint').classList.add('hidden');
+            document.getElementById('scan-loading').classList.add('hidden');
+            document.getElementById('scan-results-wrap').classList.remove('hidden');
+        }
+
         function updateScanProgressUI(data) {
             const label = document.getElementById('scan-progress-label');
-            const barWrap = document.getElementById('scan-progress-bar-wrap');
-            const bar = document.getElementById('scan-progress-bar');
 
             if (data.status === 'running') {
-                barWrap.classList.remove('hidden');
-                bar.style.width = '100%';
-                bar.classList.add('animate-pulse');
-                label.textContent = `JPX400 スキャン中... ${data.total || 400} 銘柄を並列処理しています`;
+                showScanLoading(data.mode || selectedRiskMode);
+                label.textContent = `処理中... ${data.total || 400} 銘柄`;
                 return;
             }
 
-            bar.classList.remove('animate-pulse');
+            showScanResults();
 
             if (data.status === 'completed') {
-                barWrap.classList.remove('hidden');
-                bar.style.width = '100%';
                 const elapsed = data.elapsed_seconds != null ? ` / ${data.elapsed_seconds}秒` : '';
-                label.textContent = `完了: BUY SIGNAL ${data.buy_count || 0} 件（${data.mode || selectedRiskMode}${elapsed}）`;
+                label.textContent = `BUY SIGNAL ${data.buy_count || 0} 件（${data.mode || selectedRiskMode}${elapsed}）`;
                 return;
             }
 
             if (data.status === 'failed') {
-                label.textContent = `スキャン失敗: ${data.error || '不明なエラー'}`;
+                label.textContent = `失敗: ${data.error || '不明なエラー'}`;
                 return;
             }
 
-            barWrap.classList.add('hidden');
-            bar.style.width = '0%';
             label.textContent = '待機中';
         }
 
@@ -592,10 +776,12 @@
             const emptyEl = document.getElementById('scan-hits-empty');
             const listEl = document.getElementById('scan-hits-list');
             listEl.innerHTML = '';
+            showScanResults();
 
             if (!hits || hits.length === 0) {
                 emptyEl.classList.remove('hidden');
-                emptyEl.innerHTML = '今回のスキャンでは BUY SIGNAL は検出されませんでした。別モードで再スキャンするか、後日もう一度試してください。';
+                emptyEl.innerHTML =
+                    '今回のスキャンでは BUY SIGNAL は検出されませんでした。<br class="hidden sm:inline">別モードで再スキャンするか、後日もう一度お試しください。';
                 listEl.classList.add('hidden');
                 return;
             }
@@ -606,28 +792,34 @@
             hits.forEach((hit) => {
                 const preset = hit.preset_matched || 'none';
                 const label = hit.signal_label || (preset === 'oshieme' ? '押し目シグナル' : preset === 'junbari' ? '順張りブレイク' : 'シグナル');
+                const code = displayTickerCode(hit.ticker || '');
+                const displayName = hit.name || code;
                 const row = document.createElement('div');
-                row.className = 'flex flex-col md:flex-row md:items-center gap-3 bg-slate-900/50 border border-slate-800 rounded-xl p-3';
+                row.className = 'hit-card flex flex-col sm:flex-row sm:items-center gap-4 bg-slate-900/50 border border-slate-800 rounded-xl';
                 row.innerHTML = `
-                    <div class="flex-1 min-w-0">
-                        <div class="flex flex-wrap items-center gap-2 mb-1">
-                            <span class="font-bold text-slate-100 mono-font text-xs">${escapeHtml(hit.ticker || '')}</span>
-                            <span class="text-[10px] px-2 py-0.5 rounded border ${signalBadgeClass(preset)}">${escapeHtml(label)}</span>
+                    <div class="flex-1 min-w-0 space-y-2">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <span class="font-bold text-slate-100 mono-font text-base">${escapeHtml(code)}</span>
+                            <span class="text-xs px-2.5 py-1 rounded border font-bold ${signalBadgeClass(preset)}">${escapeHtml(label)}</span>
                         </div>
-                        <div class="text-[11px] text-slate-400 truncate">${escapeHtml(hit.name || '')}</div>
-                        <div class="text-[10px] text-slate-500 mt-1 mono-font">RSI ${formatRsi(hit.rsi)} / 終値 ${hit.current_price ?? '—'}</div>
+                        <div class="text-base md:text-sm font-semibold text-slate-100 leading-snug">${escapeHtml(displayName)}</div>
+                        <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm md:text-xs text-slate-400 mono-font">
+                            <span>RSI <strong class="text-emerald-400 font-bold">${formatRsi(hit.rsi)}</strong></span>
+                            <span>終値 <strong class="text-slate-200 font-bold">${formatPrice(hit.current_price)}</strong> 円</span>
+                        </div>
                     </div>
                     <button type="button"
-                        class="shrink-0 bg-cyan-800 hover:bg-cyan-700 disabled:bg-slate-700 text-white font-bold px-3 py-2 rounded-lg text-[11px] transition-colors"
-                        data-ticker="${escapeHtml(hit.ticker || '')}">
-                        AI診断
+                        class="shrink-0 w-full sm:w-auto bg-cyan-800 hover:bg-cyan-700 disabled:bg-slate-700 text-white font-bold px-5 py-3.5 rounded-xl text-sm transition-colors min-h-[48px]">
+                        <i class="fa-solid fa-wand-magic-sparkles mr-1.5"></i> AI診断
                     </button>
                 `;
                 row.querySelector('button').addEventListener('click', () => {
-                    diagnoseHitWithDify(hit.ticker, hit.name);
+                    diagnoseHitWithDify(hit.ticker, displayName);
                 });
                 listEl.appendChild(row);
             });
+
+            document.getElementById('scan-inline-zone').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
 
         async function diagnoseHitWithDify(ticker, name) {
@@ -637,7 +829,7 @@
                 query: code,
                 code,
                 mode: selectedRiskMode,
-                displayText: `【${selectedRiskMode}】${ticker}${name ? ` ${name}` : ''} を AI 診断`,
+                displayText: `【${selectedRiskMode}】${displayTickerCode(ticker)} ${name || ''} を AI 診断`.trim(),
             });
         }
 
@@ -650,9 +842,10 @@
             const btnIcon = document.getElementById('scan-btn-icon');
 
             btnLabel.textContent = 'スキャン中...';
-            btnIcon.className = 'fa-solid fa-spinner fa-spin text-xs';
+            btnIcon.className = 'fa-solid fa-spinner fa-spin text-base';
             scanStatus.textContent = `【${selectedRiskMode}】JPX400 約400銘柄をリアルタイムスキャン中...`;
-            updateScanProgressUI({ status: 'running', total: 400 });
+            showScanLoading(selectedRiskMode);
+            updateScanProgressUI({ status: 'running', total: 400, mode: selectedRiskMode });
 
             try {
                 const response = await fetch('/api/jpx400/scan', {
@@ -669,12 +862,16 @@
                 renderScanHits(data.buy_signals || []);
                 scanStatus.textContent = data.message || `JPX400 スキャン完了: BUY SIGNAL ${data.buy_count || 0} 件`;
             } catch (error) {
+                showScanResults();
                 updateScanProgressUI({ status: 'failed', error: error.message });
+                document.getElementById('scan-hits-empty').classList.remove('hidden');
+                document.getElementById('scan-hits-empty').textContent = `スキャンに失敗しました: ${error.message}`;
+                document.getElementById('scan-hits-list').classList.add('hidden');
                 scanStatus.textContent = `スキャン失敗: ${error.message}`;
             } finally {
                 setScanBusy(false);
                 btnLabel.textContent = 'JPX400 スキャン開始';
-                btnIcon.className = 'fa-solid fa-radar text-xs';
+                btnIcon.className = 'fa-solid fa-radar text-base';
             }
         }
 
@@ -687,11 +884,11 @@
             const wrap = document.createElement('div');
             wrap.className = 'flex gap-3 items-start justify-end';
             wrap.innerHTML = `
-                <div class="bg-emerald-900/40 border border-emerald-700/40 rounded-xl rounded-tr-sm px-4 py-3 text-xs text-emerald-100 leading-relaxed max-w-[85%]">
+                <div class="chat-bubble bg-emerald-900/40 border border-emerald-700/40 rounded-xl rounded-tr-sm px-4 py-3.5 text-emerald-100 max-w-[88%]">
                     ${escapeHtml(text)}
                 </div>
-                <div class="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center shrink-0">
-                    <i class="fa-solid fa-user text-slate-400 text-xs"></i>
+                <div class="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center shrink-0">
+                    <i class="fa-solid fa-user text-slate-400"></i>
                 </div>
             `;
             document.getElementById('chat-messages').appendChild(wrap);
@@ -702,10 +899,10 @@
             const wrap = document.createElement('div');
             wrap.className = 'flex gap-3 items-start';
             wrap.innerHTML = `
-                <div class="w-8 h-8 rounded-lg bg-emerald-950 border border-emerald-800 flex items-center justify-center shrink-0">
-                    <i class="fa-solid fa-star text-emerald-400 text-xs"></i>
+                <div class="w-10 h-10 rounded-xl bg-emerald-950 border border-emerald-800 flex items-center justify-center shrink-0">
+                    <i class="fa-solid fa-star text-emerald-400"></i>
                 </div>
-                <div class="stellar-reply bg-slate-900/70 border border-emerald-900/40 rounded-xl rounded-tl-sm px-4 py-3 text-xs text-slate-200 leading-relaxed max-w-[90%] whitespace-pre-wrap typing-cursor"></div>
+                <div class="stellar-reply chat-bubble bg-slate-900/70 border border-emerald-900/40 rounded-xl rounded-tl-sm px-4 py-3.5 text-slate-200 max-w-[92%] whitespace-pre-wrap typing-cursor"></div>
             `;
             document.getElementById('chat-messages').appendChild(wrap);
             scrollChatToBottom();
@@ -713,14 +910,14 @@
         }
 
         function escapeHtml(str) {
-            return str
+            return String(str)
                 .replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;');
         }
 
-        async function typeOutMessage(element, text, speed = 16) {
+        async function typeOutMessage(element, text, speed = 14) {
             element.textContent = '';
             element.classList.add('typing-cursor');
             for (let i = 0; i < text.length; i++) {
@@ -744,20 +941,16 @@
 
             setChatBusy(true);
             const scanStatus = document.getElementById('scan-status');
-            const btnLabel = document.getElementById('scan-btn-label');
-            const btnIcon = document.getElementById('scan-btn-icon');
 
             appendUserMessage(displayText);
             const stellarEl = appendStellarMessageShell();
-            stellarEl.textContent = 'STELLAR が診断中';
+            stellarEl.textContent = 'STELLAR が診断中...';
             const statusParts = [];
             if (code) statusParts.push(`code: ${code}`);
             if (mode) statusParts.push(`mode: ${mode}`);
             scanStatus.textContent = statusParts.length > 0
-                ? `Dify API に問い合わせ中... (${statusParts.join(' / ')})`
-                : 'Dify API に問い合わせ中...';
-            btnLabel.textContent = '診断中...';
-            btnIcon.className = 'fa-solid fa-spinner fa-spin text-xs';
+                ? `AI 診断中... (${statusParts.join(' / ')})`
+                : 'AI 診断中...';
 
             const payload = {
                 query,
@@ -795,8 +988,6 @@
                 scanStatus.textContent = `診断失敗: ${error.message}`;
             } finally {
                 setChatBusy(false);
-                btnLabel.textContent = 'JPX400 スキャン開始';
-                btnIcon.className = 'fa-solid fa-radar text-xs';
             }
         }
 
@@ -847,19 +1038,19 @@
                 const probe = status.probe || {};
                 if (status.configured && probe.workflow_ok) {
                     badge.textContent = 'Dify AI 接続可';
-                    badge.className = 'text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-bold mono-font';
-                    if (modeLabel) modeLabel.textContent = 'via Dify + ローカル';
+                    badge.className = 'text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded font-bold mono-font';
+                    if (modeLabel) modeLabel.textContent = 'Dify AI + ローカル診断';
                 } else if (status.configured && probe.reachable) {
                     badge.textContent = 'Dify ワークフロー異常';
-                    badge.className = 'text-[9px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded font-bold mono-font';
+                    badge.className = 'text-xs bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded font-bold mono-font';
                     if (modeLabel) modeLabel.textContent = 'ローカル診断で代替中';
                 } else if (status.local_diagnosis_available) {
                     badge.textContent = status.configured ? 'Dify 接続不可' : 'ローカル診断';
-                    badge.className = 'text-[9px] bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-2 py-0.5 rounded font-bold mono-font';
+                    badge.className = 'text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-2.5 py-1 rounded font-bold mono-font';
                     if (modeLabel) modeLabel.textContent = 'Yahoo Finance 実データ';
                 } else {
                     badge.textContent = 'APIキー未設定';
-                    badge.className = 'text-[9px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded font-bold mono-font';
+                    badge.className = 'text-xs bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded font-bold mono-font';
                     if (modeLabel) modeLabel.textContent = '未設定';
                 }
             } catch (_) {
@@ -875,24 +1066,24 @@
             const valDisplay = document.getElementById('rsi-val');
 
             if (type === 'oshime') {
-                oshime.className = "neon-card rounded-xl p-5 text-left transition-all duration-300 border border-emerald-500/50 bg-gradient-to-br from-emerald-950/20 to-transparent shadow-[0_0_15px_rgba(16,185,129,0.1)] focus:outline-none cursor-pointer";
-                oshime.querySelector('span').className = "text-emerald-400 font-bold tracking-wide text-sm mono-font";
-                oshime.querySelector('i').className = "fa-solid fa-chart-line text-emerald-400 text-sm";
+                oshime.className = "neon-card rounded-xl p-4 md:p-5 text-left transition-all duration-300 border border-emerald-500/50 bg-gradient-to-br from-emerald-950/20 to-transparent shadow-[0_0_15px_rgba(16,185,129,0.1)] focus:outline-none cursor-pointer";
+                oshime.querySelector('span').className = "text-emerald-400 font-bold text-sm md:text-xs mono-font";
+                oshime.querySelector('i').className = "fa-solid fa-chart-line text-emerald-400";
 
-                junbari.className = "neon-card rounded-xl p-5 text-left transition-all duration-300 border border-slate-800/80 opacity-60 focus:outline-none cursor-pointer hover:opacity-90";
-                junbari.querySelector('span').className = "text-slate-400 font-bold tracking-wide text-sm mono-font";
-                junbari.querySelector('i').className = "fa-solid fa-bolt text-slate-500 text-sm";
+                junbari.className = "neon-card rounded-xl p-4 md:p-5 text-left transition-all duration-300 border border-slate-800/80 opacity-60 focus:outline-none cursor-pointer hover:opacity-90";
+                junbari.querySelector('span').className = "text-slate-400 font-bold text-sm md:text-xs mono-font";
+                junbari.querySelector('i').className = "fa-solid fa-bolt text-slate-500";
 
                 slider.value = 23;
                 valDisplay.innerText = "23";
             } else {
-                junbari.className = "neon-card rounded-xl p-5 text-left transition-all duration-300 border border-emerald-500/50 bg-gradient-to-br from-emerald-950/20 to-transparent shadow-[0_0_15px_rgba(16,185,129,0.1)] focus:outline-none cursor-pointer";
-                junbari.querySelector('span').className = "text-emerald-400 font-bold tracking-wide text-sm mono-font";
-                junbari.querySelector('i').className = "fa-solid fa-bolt text-emerald-400 text-sm";
+                junbari.className = "neon-card rounded-xl p-4 md:p-5 text-left transition-all duration-300 border border-emerald-500/50 bg-gradient-to-br from-emerald-950/20 to-transparent shadow-[0_0_15px_rgba(16,185,129,0.1)] focus:outline-none cursor-pointer";
+                junbari.querySelector('span').className = "text-emerald-400 font-bold text-sm md:text-xs mono-font";
+                junbari.querySelector('i').className = "fa-solid fa-bolt text-emerald-400";
 
-                oshime.className = "neon-card rounded-xl p-5 text-left transition-all duration-300 border border-slate-800/80 opacity-60 focus:outline-none cursor-pointer hover:opacity-90";
-                oshime.querySelector('span').className = "text-slate-400 font-bold tracking-wide text-sm mono-font";
-                oshime.querySelector('i').className = "fa-solid fa-chart-line text-slate-500 text-sm";
+                oshime.className = "neon-card rounded-xl p-4 md:p-5 text-left transition-all duration-300 border border-slate-800/80 opacity-60 focus:outline-none cursor-pointer hover:opacity-90";
+                oshime.querySelector('span').className = "text-slate-400 font-bold text-sm md:text-xs mono-font";
+                oshime.querySelector('i').className = "fa-solid fa-chart-line text-slate-500";
 
                 slider.value = 60;
                 valDisplay.innerText = "52 - 60";

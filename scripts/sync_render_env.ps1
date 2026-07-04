@@ -9,10 +9,12 @@
 # オプション:
 #   -ServiceName  stellar-screener  (デフォルト)
 #   -EnvFile       ..\.env           (デフォルト)
+#   -Deploy        環境変数反映後に再デプロイをトリガーする (デフォルト: $true)
 
 param(
     [string]$ServiceName = "stellar-screener",
-    [string]$EnvFile = (Join-Path (Split-Path $PSScriptRoot -Parent) ".env")
+    [string]$EnvFile = (Join-Path (Split-Path $PSScriptRoot -Parent) ".env"),
+    [bool]$Deploy = $true
 )
 
 Set-StrictMode -Version Latest
@@ -22,7 +24,7 @@ $apiKey = $env:RENDER_API_KEY
 if (-not $apiKey) {
     Write-Error @"
 RENDER_API_KEY が未設定です。
-Dashboard → Account Settings → API Keys で発行し、次を実行してください:
+Dashboard -> Account Settings -> API Keys で発行し、次を実行してください:
   `$env:RENDER_API_KEY = "rnd_xxxxxxxx"
   .\scripts\sync_render_env.ps1
 "@
@@ -38,17 +40,42 @@ $headers = @{
 }
 
 function Invoke-RenderApi {
-    param([string]$Method, [string]$Uri, $Body = $null)
+    param(
+        [string]$Method,
+        [string]$Uri,
+        $Body = $null
+    )
     $params = @{
         Method  = $Method
         Uri     = $Uri
         Headers = $headers
     }
-    if ($Body) {
+    if ($null -ne $Body) {
         $params.ContentType = "application/json"
         $params.Body = ($Body | ConvertTo-Json -Depth 5 -Compress)
     }
     return Invoke-RestMethod @params
+}
+
+function Set-RenderEnvVar {
+    param(
+        [string]$ServiceId,
+        [string]$Key,
+        [string]$Value
+    )
+    # Render API: PUT /v1/services/{serviceId}/env-vars/{envVarKey}
+    # Body: { "value": "..." }
+    Invoke-RenderApi -Method PUT -Uri "https://api.render.com/v1/services/$ServiceId/env-vars/$Key" -Body @{
+        value = $Value
+    } | Out-Null
+}
+
+function Remove-RenderEnvVar {
+    param(
+        [string]$ServiceId,
+        [string]$Key
+    )
+    Invoke-RenderApi -Method DELETE -Uri "https://api.render.com/v1/services/$ServiceId/env-vars/$Key" | Out-Null
 }
 
 Write-Host "Render サービス一覧を取得中..." -ForegroundColor Cyan
@@ -85,36 +112,47 @@ $syncKeys = @(
 $existing = Invoke-RenderApi -Method GET -Uri "https://api.render.com/v1/services/$serviceId/env-vars?limit=100"
 $existingKeys = @{}
 foreach ($item in $existing) {
-    if ($item.envVar) { $existingKeys[$item.envVar.key] = $item.envVar.id }
+    if ($item.envVar) {
+        $existingKeys[$item.envVar.key] = $true
+    }
 }
 
 foreach ($key in $syncKeys) {
     if (-not $envMap.ContainsKey($key)) {
-        Write-Host "  [skip] $key — .env に存在しません" -ForegroundColor DarkYellow
+        Write-Host "  [skip] $key - .env に存在しません" -ForegroundColor DarkYellow
         continue
     }
     $value = $envMap[$key]
     if ($value -match "your_.*_here") {
-        Write-Host "  [skip] $key — プレースホルダーのままです" -ForegroundColor DarkYellow
+        Write-Host "  [skip] $key - プレースホルダーのままです" -ForegroundColor DarkYellow
         continue
     }
 
-    if ($existingKeys.ContainsKey($key)) {
-        $varId = $existingKeys[$key]
-        Write-Host "  [update] $key" -ForegroundColor Cyan
-        Invoke-RenderApi -Method PUT -Uri "https://api.render.com/v1/services/$serviceId/env-vars/$varId" -Body @{
-            envVar = @{ key = $key; value = $value }
-        } | Out-Null
-    } else {
-        Write-Host "  [create] $key" -ForegroundColor Cyan
-        Invoke-RenderApi -Method POST -Uri "https://api.render.com/v1/services/$serviceId/env-vars" -Body @{
-            envVar = @{ key = $key; value = $value }
-        } | Out-Null
-    }
+    $action = if ($existingKeys.ContainsKey($key)) { "update" } else { "create" }
+    Write-Host "  [$action] $key" -ForegroundColor Cyan
+    Set-RenderEnvVar -ServiceId $serviceId -Key $key -Value $value
+}
+
+# 過去の typo キー (DIFY_APi_KEY) が残っていれば削除
+$typoKey = "DIFY_APi_KEY"
+if ($existingKeys.ContainsKey($typoKey)) {
+    Write-Host "  [delete] $typoKey (typo)" -ForegroundColor DarkYellow
+    Remove-RenderEnvVar -ServiceId $serviceId -Key $typoKey
 }
 
 Write-Host ""
 Write-Host "環境変数の反映が完了しました。" -ForegroundColor Green
-Write-Host "Render が自動再デプロイします（1〜3分）。完了後に確認:" -ForegroundColor Gray
+
+if ($Deploy) {
+    Write-Host "再デプロイをトリガー中..." -ForegroundColor Cyan
+    $deploy = Invoke-RenderApi -Method POST -Uri "https://api.render.com/v1/services/$serviceId/deploys" -Body @{
+        clearCache = "do_not_clear"
+    }
+    Write-Host "  deploy id: $($deploy.id) / status: $($deploy.status)" -ForegroundColor Gray
+    Write-Host "  1-3 分後に /health を確認してください。" -ForegroundColor Gray
+} else {
+    Write-Host "注意: Render API では環境変数変更後、再デプロイが必要です (-Deploy `$true)" -ForegroundColor DarkYellow
+}
+
 Write-Host "  https://stellar-screener.onrender.com/health" -ForegroundColor Gray
 Write-Host '  line_connected: true / dify_configured: true になれば OK' -ForegroundColor Gray
