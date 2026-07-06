@@ -195,9 +195,7 @@
             <div
                 class="flex flex-wrap items-center gap-2 text-sm md:text-xs bg-slate-900/60 px-4 py-3 rounded-xl border border-slate-800 w-full md:w-auto">
                 <span class="flex items-center gap-1.5"><span
-                        class="w-2 h-2 rounded-full bg-pink-500 animate-pulse"></span> LINE通知: 有効</span>
-                <span class="text-slate-600 hidden sm:inline">|</span>
-                <span class="text-slate-300 font-medium" id="next-scan-label">次回自動スキャン: 読込中...</span>
+                        class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> 手動スキャン / 結果はその場で表示</span>
             </div>
         </header>
 
@@ -361,15 +359,15 @@
             </section>
         </div>
 
-        <!-- ② JPX400 自動株価スキャン（一体型） -->
+        <!-- ② JPX400 テクニカルスキャン（一体型） -->
         <section class="neon-card section-card border-t-2 border-t-emerald-500/40 space-y-5">
             <div class="section-heading mb-0">
                 <div class="section-icon bg-emerald-950/50 border border-emerald-800/50 text-emerald-400">
                     <i class="fa-solid fa-radar"></i>
                 </div>
                 <div class="flex-1 min-w-0">
-                    <h2 class="section-title text-emerald-400">② JPX400 自動株価スキャン</h2>
-                    <p class="section-desc">約400銘柄をリアルタイム走査し、BUY SIGNAL をその場で表示します。</p>
+                    <h2 class="section-title text-emerald-400">② JPX400 テクニカルスキャン</h2>
+                    <p class="section-desc">主要400銘柄のチャートをリアルタイムでスキャンし、買い時シグナル（BUY SIGNAL）をその場で検出します。</p>
                 </div>
             </div>
 
@@ -447,12 +445,12 @@
                 </div>
                 <div class="flex-1 min-w-0">
                     <div class="flex flex-wrap justify-between items-start gap-2">
-                        <h2 class="section-title text-cyan-400">④ テクニカル AI 診断チャット</h2>
+                        <h2 class="section-title text-cyan-400">④ 統合AI診断チャット（テクニカル＆ファンダメンタルズ）</h2>
                         <span id="dify-status-badge"
                             class="text-xs bg-slate-900 text-slate-400 border border-slate-700 px-2.5 py-1 rounded font-bold mono-font">接続確認中</span>
                     </div>
                     <p class="section-desc">
-                        銘柄コードやリスクモードを入力すると、テクニカル＋ファンダメンタルズ（PER / PBR / ROE 等）で診断します。
+                        スキャンした銘柄コードを入力すると、チャート分析に加え、業績や財務（ファンダメンタルズ）も含めてAIが総合的に診断します。
                         <span id="dify-mode-label" class="text-cyan-500/80">接続確認中</span>
                     </p>
                 </div>
@@ -466,9 +464,7 @@
                     </div>
                     <div
                         class="chat-bubble bg-slate-900/70 border border-slate-800 rounded-xl rounded-tl-sm px-4 py-3.5 text-slate-200 max-w-[92%]">
-                        銘柄コード（例: <span class="mono-font text-cyan-400">7203</span> / <span
-                            class="mono-font text-cyan-400">285A</span>）やリスクモード（<span
-                            class="text-emerald-400">堅実</span>）を入力すると、<strong class="text-slate-100">テクニカル分析</strong>に加え<strong class="text-slate-100">ファンダメンタルズ分析</strong>（PER / PBR / ROE 等）で診断します。スキャン結果の「AI診断」ボタンからも利用できます。
+                        💡 使い方：下の入力欄に銘柄コード（例：<span class="mono-font text-cyan-400">7203</span>）を入力して送信するか、スキャン結果の「AI診断」ボタンをタップしてください。
                     </div>
                 </div>
             </div>
@@ -1090,29 +1086,8 @@
             }
         }
 
-        async function loadNextScanTime() {
-            try {
-                const health = await fetch('/health').then((r) => r.json());
-                if (health.next_scan_time) {
-                    const dt = new Date(health.next_scan_time);
-                    const jst = dt.toLocaleString('ja-JP', {
-                        timeZone: 'Asia/Tokyo',
-                        month: 'numeric',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                    });
-                    document.getElementById('next-scan-label').textContent =
-                        `次回自動スキャン: ${jst} JST`;
-                }
-            } catch (_) {
-                document.getElementById('next-scan-label').textContent = '次回自動スキャン: 未取得';
-            }
-        }
-
         selectRiskMode('堅実');
         loadWatchlist();
-        loadNextScanTime();
         loadDifyStatus();
     </script>
 </body>

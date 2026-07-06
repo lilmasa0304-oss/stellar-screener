@@ -27,7 +27,6 @@ from screener.jp_stock_code import (
 from screener.jp_stock_names import resolve_jp_display_name
 from screener.fundamentals import fetch_fundamentals, format_fundamentals_lines
 from screener.strategy import StrategyEvaluator
-from screener.notifier import LineNotifier
 from screener import storage
 from screener.scheduler import start_scheduler, stop_scheduler, get_next_run_time
 
@@ -258,7 +257,6 @@ def get_config():
     """現在の設定一式を返す。"""
     try:
         cfg = read_config_yaml()
-        cfg["line_connected"]  = Config("config.yaml").validate_line_credentials()
         cfg["next_scan_time"]  = get_next_run_time()
         return cfg
     except Exception as e:
@@ -361,7 +359,7 @@ def get_stocks_data():
 # ── 即時スクリーニング（ウォッチリスト対象） ──────────────────────────────
 @app.post("/api/run")
 def run_screener():
-    """ウォッチリスト対象の即時スクリーニングを実行して LINE に通知する。"""
+    """ウォッチリスト対象の即時スクリーニングを実行する。"""
     try:
         config      = Config("config.yaml")
         fetcher     = DataFetcher(
@@ -385,24 +383,11 @@ def run_screener():
             if res["buy_signal"]:
                 buy_signals.append(res)
 
-        sent_line = False
-        message   = ""
-        if buy_signals:
-            notifier  = LineNotifier(config.line_token, config.line_user_id)
-            message   = notifier.build_buy_signal_message(buy_signals)
-            if config.validate_line_credentials():
-                sent_line = notifier.send_notification(message)
-        elif matched:
-            notifier = LineNotifier(config.line_token, config.line_user_id)
-            message  = notifier.build_message(matched)
-
         return {
-            "status":          "success",
-            "matched_count":   len(matched),
+            "status":           "success",
+            "matched_count":    len(matched),
             "buy_signal_count": len(buy_signals),
-            "matched_results": matched,
-            "sent_line":       sent_line,
-            "message_preview": message,
+            "matched_results":  matched,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"スクリーニング実行に失敗: {e}")
@@ -525,21 +510,10 @@ async def _execute_jpx400_realtime_scan(selected_mode: str = "堅実") -> Dict[s
     await _localize_stock_names(buy_signals)
     decorated = _decorate_buy_signal_rows(buy_signals)
 
-    sent_line = False
-    if buy_signals:
-        try:
-            cfg = Config("config.yaml")
-            if cfg.validate_line_credentials():
-                notifier = LineNotifier(cfg.line_token, cfg.line_user_id)
-                message = notifier.build_buy_signal_message(buy_signals)
-                sent_line = notifier.send_notification(message)
-        except Exception as line_err:
-            logger.warning(f"LINE 通知スキップ: {line_err}")
-
     storage.complete_session(
         scan_id=scan_id,
         buy_signal_count=len(buy_signals),
-        sent_line=sent_line,
+        sent_line=False,
     )
 
     payload = {
@@ -552,7 +526,6 @@ async def _execute_jpx400_realtime_scan(selected_mode: str = "堅実") -> Dict[s
         "buy_count":       len(buy_signals),
         "buy_signals":     decorated,
         "elapsed_seconds": elapsed,
-        "sent_line":       sent_line,
         "message":         (
             f"【{safe_mode}】JPX400 スキャン完了: "
             f"BUY SIGNAL {len(buy_signals)} 件 / {total} 銘柄（{elapsed}秒）"
@@ -1407,7 +1380,6 @@ def health_check():
     return {
         "status":          "ok",
         "platform":        "render" if IS_RENDER else ("vercel" if IS_VERCEL else "local"),
-        "line_connected":  cfg.validate_line_credentials(),
         "dify_configured": _is_dify_configured(),
         "chat_mode":       "dify" if _is_dify_configured() else "local",
         "ticker_count":    len(cfg.tickers),

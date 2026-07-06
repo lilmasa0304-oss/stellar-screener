@@ -41,10 +41,6 @@ services:
         value: "0"
 
       # --- 以下は Render UI から手動設定（sync: false）---
-      - key: LINE_CHANNEL_ACCESS_TOKEN
-        sync: false
-      - key: LINE_USER_ID
-        sync: false
       - key: DIFY_API_KEY
         sync: false
       - key: DIFY_BASE_URL

@@ -2,7 +2,7 @@
 APScheduler を使った定時スキャンスケジューラー。
 
 ・平日 16:00 JST（07:00 UTC）に JPX400 全銘柄を自動スキャン
-・BUY SIGNAL が出た銘柄を LINE に自動通知
+・結果は SQLite に保存（UI は手動スキャンでその場表示）
 ・FastAPI の lifespan イベントで起動/停止する
 """
 
@@ -30,7 +30,6 @@ def _run_jpx400_scan_job():
     from screener.jpx400 import get_jpx400_tickers
     from screener.data_fetcher import DataFetcher
     from screener.strategy import StrategyEvaluator
-    from screener.notifier import LineNotifier
     from screener.config import Config
     from screener import storage
 
@@ -82,23 +81,15 @@ def _run_jpx400_scan_job():
                 logger.error(f"[Scheduler] {ticker} 評価エラー: {ticker_err}")
                 processed += 1
 
-        # LINE 通知
-        sent_line = False
         if buy_signals:
-            if config.validate_line_credentials():
-                notifier = LineNotifier(config.line_token, config.line_user_id)
-                message  = notifier.build_buy_signal_message(buy_signals)
-                sent_line = notifier.send_notification(message)
-                logger.info(f"[Scheduler] LINE 送信: {'成功' if sent_line else '失敗'}")
-            else:
-                logger.warning("[Scheduler] LINE 認証情報未設定のため通知をスキップします。")
+            logger.info(f"[Scheduler] BUY SIGNAL {len(buy_signals)} 件を検出。")
         else:
-            logger.info("[Scheduler] BUY SIGNAL なし。LINE 通知をスキップ。")
+            logger.info("[Scheduler] BUY SIGNAL なし。")
 
         storage.complete_session(
             scan_id=scan_id,
             buy_signal_count=len(buy_signals),
-            sent_line=sent_line,
+            sent_line=False,
         )
         logger.info(
             f"[Scheduler] 定時スキャン完了: "

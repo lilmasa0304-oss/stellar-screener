@@ -103,8 +103,6 @@ Get-Content $EnvFile -Encoding UTF8 | ForEach-Object {
 }
 
 $syncKeys = @(
-    "LINE_CHANNEL_ACCESS_TOKEN",
-    "LINE_USER_ID",
     "DIFY_API_KEY",
     "DIFY_BASE_URL"
 )
@@ -155,4 +153,4 @@ if ($Deploy) {
 }
 
 Write-Host "  https://stellar-screener.onrender.com/health" -ForegroundColor Gray
-Write-Host '  line_connected: true / dify_configured: true になれば OK' -ForegroundColor Gray
+Write-Host '  dify_configured: true になれば OK（未設定時はローカル診断モード）' -ForegroundColor Gray

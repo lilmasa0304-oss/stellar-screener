@@ -1,18 +1,10 @@
 # ──────────────────────────────────────────────────────────────────────────
-# STELLAR SCREENER — GitHub Actions 定時スキャン
+# STELLAR SCREENER — GitHub Actions 定時スキャン（CLI / DB 保存のみ）
 #
 # 毎平日 16:00 JST (= 07:00 UTC) に JPX400 スキャンを自動実行し、
-# BUY SIGNAL が出た銘柄を LINE に通知します。
+# 結果を SQLite に保存します（通知は行いません）。
 #
-# 【設定手順】
-#   1. GitHub リポジトリの Settings → Secrets → Actions で
-#      以下の2つのシークレットを登録する:
-#        SECRET: LINE_CHANNEL_ACCESS_TOKEN  ← LINE Messaging API トークン
-#        SECRET: LINE_USER_ID               ← 通知先のユーザー ID
-#
-#   2. このファイルを .github/workflows/daily_screener.yml に配置してプッシュする
-#
-#   3. "Actions" タブで手動実行（workflow_dispatch）も可能
+# 手動スキャンは Web ダッシュボード（web_app.py）を使用してください。
 # ──────────────────────────────────────────────────────────────────────────
 
 name: 📈 JPX400 Daily Screener (16:00 JST)
@@ -22,59 +14,33 @@ on:
     # 毎平日 07:00 UTC = 16:00 JST
     - cron: "0 7 * * 1-5"
 
-  # 手動実行ボタン（GitHub の Actions タブから実行可能）
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "ドライラン（LINE通知を送らずコンソール出力のみ）"
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "true"
-          - "false"
 
 jobs:
   screen:
     name: 株式スクリーニング実行
     runs-on: ubuntu-latest
-    timeout-minutes: 60   # 最大 60 分（JPX400 全銘柄のフェッチ時間を考慮）
+    timeout-minutes: 60
 
     steps:
-      # ── 1. リポジトリのチェックアウト ──────────────────────────────────
       - name: リポジトリを取得
         uses: actions/checkout@v4
 
-      # ── 2. Python 環境セットアップ ──────────────────────────────────────
       - name: Python 3.11 をセットアップ
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
-      # ── 3. 依存ライブラリをインストール ────────────────────────────────
       - name: 依存ライブラリをインストール
         run: pip install -r requirements.txt
 
-      # ── 4. data/ ディレクトリを作成（SQLite DB 用） ────────────────────
       - name: DB ディレクトリを作成
         run: mkdir -p data
 
-      # ── 5. スクリーニング実行 ───────────────────────────────────────────
       - name: JPX400 スクリーニング実行
-        env:
-          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-          LINE_USER_ID:              ${{ secrets.LINE_USER_ID }}
-        run: |
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            echo "ドライランモードで実行します（LINE通知なし）"
-            python main.py --dry-run
-          else
-            echo "本番モードで実行します（BUY SIGNAL 時に LINE 通知）"
-            python main.py
-          fi
+        run: python main.py --jpx400
 
-      # ── 6. スキャン結果（SQLite）をアーティファクトとして保存 ───────────
       - name: スキャン結果を保存
         if: always()
         uses: actions/upload-artifact@v4

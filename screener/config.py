@@ -12,9 +12,6 @@ class Config:
     def __init__(self, config_path="config.yaml"):
         load_dotenv()
 
-        self.line_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-        self.line_user_id = os.getenv("LINE_USER_ID")
-
         path = Path(config_path)
         if not path.exists():
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
@@ -54,11 +51,3 @@ class Config:
 
     def is_jpx400_universe(self) -> bool:
         return self.data.get("universe") == "jpx400" or len(self.tickers) >= 350
-
-    def validate_line_credentials(self) -> bool:
-        """Checks if the LINE access token and user ID are configured correctly."""
-        if not self.line_token or self.line_token == "your_channel_access_token_here":
-            return False
-        if not self.line_user_id or self.line_user_id == "your_user_id_here":
-            return False
-        return True
