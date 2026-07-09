@@ -1,4 +1,6 @@
 import asyncio
+import json
+import math
 import os
 import re
 import uuid
@@ -17,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from screener.config import Config
 from screener.data_fetcher import DataFetcher
+from screener.dify_inputs import build_dify_inputs
 from screener.jp_stock_code import (
     extract_jp_stock_code,
     find_jp_stock_code_in_text,
@@ -178,7 +181,15 @@ class UpdateConfigPayload(BaseModel):
 
 
 class TickerDiagnosisPayload(BaseModel):
-    ticker: str = Field(..., description="日本株銘柄コード（例: 1605, 7203, 285A）")
+    ticker: Optional[str] = Field(None, description="日本株銘柄コード（例: 1605, 7203, 285A）")
+    code:   Optional[str] = Field(None, description="ticker の別名（Dify HTTP ノード互換）")
+
+    def resolved_ticker(self) -> str:
+        raw = (self.ticker or self.code or "").strip()
+        if not raw:
+            raise HTTPException(status_code=422, detail="ticker または code が必要です。")
+        normalized = normalize_jp_stock_code(raw)
+        return normalized or raw.upper().removesuffix(".T")
 
 
 class ScreenPayload(BaseModel):
@@ -205,6 +216,10 @@ class DifyChatPayload(BaseModel):
     mode:             Optional[str] = Field(
         None,
         description="リスクモード（inputs.mode へ渡す。堅実 / 標準 / 積極）",
+    )
+    screen_data:      Optional[Dict[str, Any]] = Field(
+        None,
+        description="フロント/スキャン結果の実診断データ（RSI・乖離率等）。未指定時はサーバーで取得。",
     )
     conversation_id:  Optional[str] = Field(None, description="会話を継続する場合の ID")
 
@@ -632,18 +647,45 @@ def _normalize_ticker_code(raw: str) -> str:
     return f"{normalized}.T"
 
 
+def _safe_float(value: Any, fallback: Optional[float] = None) -> Optional[float]:
+    """NaN / Inf を除去した float を返す。"""
+    if value is None:
+        return fallback
+    try:
+        if hasattr(value, "item"):
+            value = value.item()
+        num = float(value)
+        if math.isnan(num) or math.isinf(num):
+            return fallback
+        return num
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _last_valid_close(df) -> Optional[float]:
+    """直近の有効な終値（当日 NaN 行をスキップ）。"""
+    if df is None or df.empty or "Close" not in df.columns:
+        return None
+    closes = df["Close"].dropna()
+    if closes.empty:
+        return None
+    return _safe_float(closes.iloc[-1])
+
+
 def _compute_technical_metrics(df) -> Dict[str, float]:
     """診断レポート表示用の補助指標を算出する。"""
-    latest = df.iloc[-1]
-    close_p = float(latest["Close"])
+    close_p = _last_valid_close(df) or 0.0
     ma25 = df["Close"].rolling(window=25).mean().iloc[-1]
-    ma25_divergence = ((close_p - ma25) / ma25) * 100 if ma25 else 0.0
+    ma25_val = _safe_float(ma25)
+    ma25_divergence = ((close_p - ma25_val) / ma25_val) * 100 if ma25_val else 0.0
     avg_volume_5d = df["Volume"].iloc[-6:-1].mean()
-    current_volume = float(df["Volume"].iloc[-1])
-    volume_ratio = current_volume / avg_volume_5d if avg_volume_5d > 0 else 1.0
+    latest = df.iloc[-1]
+    current_volume = _safe_float(latest["Volume"], 0.0) or 0.0
+    avg_vol = _safe_float(avg_volume_5d, 0.0) or 0.0
+    volume_ratio = current_volume / avg_vol if avg_vol > 0 else 1.0
     return {
-        "ma25_divergence_pct": round(float(ma25_divergence), 2),
-        "volume_ratio":        round(float(volume_ratio), 2),
+        "ma25_divergence_pct": round(_safe_float(ma25_divergence, 0.0) or 0.0, 2),
+        "volume_ratio":        round(_safe_float(volume_ratio, 1.0) or 1.0, 2),
     }
 
 
@@ -674,21 +716,27 @@ def _diagnose_ticker(raw_code: str, mode: Optional[str] = None) -> Dict[str, Any
     fundamentals = fetch_fundamentals(yahoo_ticker)
 
     display_code = ticker_code.removesuffix(".T")
+    close_fallback = _last_valid_close(df)
+    current_price = _safe_float(
+        result.get("current_price") or result.get("close_price"),
+        close_fallback,
+    )
     return {
         "status":              "success",
         "code":                display_code,
         "ticker":              display_code,
         "name":                name,
         "mode":                safe_mode or "堅実",
-        "current_price":       result.get("current_price") or result.get("close_price"),
-        "rsi":                 result.get("rsi"),
-        "ma25":                result.get("ma25"),
+        "current_price":       current_price,
+        "rsi":                 _safe_float(result.get("rsi")),
+        "ma25":                _safe_float(result.get("ma25")),
         "ma25_uptrend":        result.get("ma25_uptrend"),
         "ma25_deviation_pct":  metrics["ma25_divergence_pct"],
         "volume_ratio":        metrics["volume_ratio"],
         "buy_signal":          result.get("buy_signal", False),
         "reason":              result.get("reason"),
         "preset_matched":      result.get("preset_matched"),
+        "preset_evaluations":  result.get("preset_evaluations"),
         "sector":              fundamentals.get("sector") or result.get("sector"),
         "trend_status":        _derive_trend_status(result),
         "fundamentals":        fundamentals,
@@ -824,9 +872,8 @@ def _fast_dummy_mode_response(mode: str) -> Dict[str, Any]:
 async def execute_screener(payload: ScreenPayload):
     """
     Dify / フロントエンド用スクリーニング API。
-    - code 指定時: 即時ダミー応答（最優先・1秒以内）
-    - ticker のみ指定時: 単一銘柄の実診断
-    - mode のみ指定時: JPX400 一括非同期スキャン
+    - code / ticker 指定時: 単一銘柄の実診断（Yahoo Finance）
+    - mode のみ指定時: 高速ダミーまたは JPX400 一括スキャン（full_scan）
     """
     # 最優先: JSON に code が含まれる場合
     if payload.code is not None:
@@ -854,8 +901,10 @@ async def execute_screener(payload: ScreenPayload):
             if single:
                 logger.info(f"/api/v1/screen 単一銘柄実診断: code={single}")
                 return await asyncio.to_thread(_diagnose_ticker, single, payload.mode)
-            logger.info(f"/api/v1/screen 高速ダミー応答: code={code}")
-            return _fast_dummy_screen_response(code, payload.mode)
+            raise HTTPException(
+                status_code=422,
+                detail=f"銘柄コード '{code}' を解析できませんでした。",
+            )
 
     ticker_code = (payload.ticker or "").strip()
     if ticker_code:
@@ -869,8 +918,10 @@ async def execute_screener(payload: ScreenPayload):
 
     selected_mode = payload.mode or "堅実"
     if not payload.full_scan:
-        logger.info(f"/api/v1/screen 高速ダミー応答: mode={selected_mode}")
-        return _fast_dummy_mode_response(selected_mode)
+        raise HTTPException(
+            status_code=422,
+            detail="code または ticker を指定してください（mode のみでは実データを返しません）。",
+        )
 
     try:
         return await _execute_bulk_screener(selected_mode)
@@ -883,11 +934,11 @@ async def execute_screener(payload: ScreenPayload):
 def diagnose_ticker_for_bot(payload: TickerDiagnosisPayload):
     """Dify の AI ボットから呼び出され、特定銘柄のテクニカル分析結果を返す。"""
     try:
-        return _diagnose_ticker(payload.ticker)
+        return _diagnose_ticker(payload.resolved_ticker())
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"/api/bot/diagnose エラー (ticker={payload.ticker}): {e}")
+        logger.exception(f"/api/bot/diagnose エラー (ticker={payload.resolved_ticker()}): {e}")
         raise HTTPException(status_code=500, detail=f"銘柄診断中にエラーが発生しました: {e}")
 
 
@@ -964,23 +1015,19 @@ def _parse_query_for_screen(query: str) -> Dict[str, Any]:
 
 
 def _local_screen_from_query(query: str) -> Dict[str, Any]:
-    """ローカル FastAPI の診断ロジックを直接実行する。"""
+    """ローカル FastAPI の診断ロジックを直接実行する（ダミー値は使わない）。"""
     ticker_code = _extract_single_ticker_from_query(query)
     if ticker_code:
-        try:
-            return _diagnose_ticker(ticker_code)
-        except HTTPException:
-            parsed = _parse_query_for_screen(query)
-            if "code" in parsed:
-                return _fast_dummy_screen_response(parsed["code"], parsed.get("mode"))
+        return _diagnose_ticker(ticker_code)
 
     parsed = _parse_query_for_screen(query)
     if "code" in parsed:
-        try:
-            return _diagnose_ticker(parsed["code"])
-        except HTTPException:
-            return _fast_dummy_screen_response(parsed["code"], parsed.get("mode"))
-    return _fast_dummy_mode_response(parsed.get("mode", "堅実"))
+        return _diagnose_ticker(parsed["code"], parsed.get("mode"))
+
+    raise HTTPException(
+        status_code=422,
+        detail="銘柄コードを入力してください（例: 7203 / 285A）。",
+    )
 
 
 def _format_rsi(value: Any) -> str:
@@ -1026,6 +1073,15 @@ def _format_stellar_answer(screen_data: Dict[str, Any], query: str) -> str:
             f"トレンド判定: {screen_data.get('trend_status', 'WAIT')}",
             f"テクニカル所見: {screen_data.get('reason', '—')}",
         ]
+        preset_evals = screen_data.get("preset_evaluations") or {}
+        if preset_evals:
+            lines += ["", "【両戦略モード評価】"]
+            for key, label in (("oshieme", "押し目シグナル"), ("junbari", "順張りブレイク")):
+                ev = preset_evals.get(key) or {}
+                status = "✅ 条件一致" if ev.get("matched") else "❌ 条件不一致"
+                lines.append(f"  {label}: {status}")
+                if ev.get("reason"):
+                    lines.append(f"    → {ev['reason']}")
         fundamentals = screen_data.get("fundamentals")
         if fundamentals:
             lines.extend(format_fundamentals_lines(fundamentals))
@@ -1066,15 +1122,125 @@ def _resolve_dify_code(explicit_code: Optional[str], query: str) -> Optional[str
     return normalize_stock_codes_param(_extract_single_ticker_from_query(query))
 
 
-def _build_dify_inputs(code: Optional[str], mode: Optional[str] = None) -> Dict[str, str]:
-    """Dify Chat-App API の inputs（ワークフロー変数 code / mode）を組み立てる。"""
-    inputs: Dict[str, str] = {}
+def _lookup_jpx400_scan_hit(code: str) -> Optional[Dict[str, Any]]:
+    """直近 JPX400 スキャン結果から銘柄ヒットを検索する。"""
+    target = (normalize_jp_stock_code(code) or code.strip()).removesuffix(".T").upper()
+    if not target:
+        return None
+    for row in _jpx400_progress.get("buy_signals") or []:
+        ticker = (row.get("ticker") or "").removesuffix(".T").upper()
+        if ticker == target:
+            return dict(row)
+    return None
+
+
+def _merge_screen_data(
+    primary: Dict[str, Any],
+    secondary: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """診断 dict をマージする（primary を優先、欠損のみ secondary で補完）。"""
+    merged = dict(primary)
+    if not secondary:
+        return merged
+    for key, value in secondary.items():
+        if value is None:
+            continue
+        if merged.get(key) in (None, ""):
+            merged[key] = value
+    return merged
+
+
+def _fetch_live_screen_data(
+    code: str,
+    mode: Optional[str] = None,
+    hint: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Yahoo Finance 実診断データを取得する（Dify / チャット用）。
+    スキャンキャッシュ・フロント hint は欠損フィールドの補完にのみ使う。
+    """
     normalized = normalize_stock_codes_param(code)
-    if normalized:
-        inputs["code"] = normalized
-    if mode and mode in RISK_MODES:
-        inputs["mode"] = mode
-    return inputs
+    if not normalized or "," in normalized:
+        raise HTTPException(status_code=422, detail="単一銘柄コードが必要です。")
+
+    single_code = normalized.split(",")[0]
+    live = _diagnose_ticker(single_code, mode)
+    cached = _lookup_jpx400_scan_hit(single_code)
+    if cached:
+        live = _merge_screen_data(live, cached)
+    if hint and not _is_dummy_screen_data(hint):
+        live = _merge_screen_data(live, hint)
+    return live
+
+
+def _is_dummy_screen_data(screen_data: Optional[Dict[str, Any]]) -> bool:
+    """高速ダミー応答（RSI 20 / 乖離率 -5% 固定）かどうか。"""
+    if not screen_data:
+        return True
+    if screen_data.get("fast_response"):
+        return True
+    rsi = screen_data.get("rsi")
+    divergence = screen_data.get("ma25_deviation_pct", screen_data.get("ma25_divergence_pct"))
+    if rsi == 20.0 and divergence == -5.0 and screen_data.get("current_price") is None:
+        return True
+    return False
+
+
+def _has_complete_live_metrics(screen_data: Optional[Dict[str, Any]]) -> bool:
+    """Yahoo Finance 実診断として inputs 送信に十分なデータがあるか。"""
+    if not screen_data or _is_dummy_screen_data(screen_data):
+        return False
+    return (
+        screen_data.get("rsi") is not None
+        and screen_data.get("current_price") is not None
+        and screen_data.get("volume_ratio") is not None
+    )
+
+
+def _build_dify_inputs(
+    code: Optional[str],
+    mode: Optional[str] = None,
+    screen_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Dify Chat-App API の inputs（実診断データをフラット展開）。"""
+    normalized = normalize_stock_codes_param(code)
+    if not normalized or "," in normalized:
+        hint = screen_data if not _is_dummy_screen_data(screen_data) else None
+        if hint:
+            return build_dify_inputs(hint, None, mode)
+        return build_dify_inputs(None, None, mode)
+
+    single_code = normalized.split(",")[0]
+    if _has_complete_live_metrics(screen_data):
+        return build_dify_inputs(screen_data, single_code, mode)
+
+    hint = screen_data if not _is_dummy_screen_data(screen_data) else None
+    live = _fetch_live_screen_data(single_code, mode, hint)
+    return build_dify_inputs(live, single_code, mode)
+
+
+async def _resolve_screen_data_for_dify(
+    code: Optional[str],
+    mode: Optional[str],
+    explicit: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Dify へ渡す実データ診断 dict を解決する（常に Yahoo Finance 実データ）。"""
+    normalized = normalize_stock_codes_param(code)
+    if not normalized or "," in normalized:
+        return explicit if not _is_dummy_screen_data(explicit) else None
+
+    single_code = normalized.split(",")[0]
+    hint = explicit if not _is_dummy_screen_data(explicit) else None
+    try:
+        return await asyncio.to_thread(_fetch_live_screen_data, single_code, mode, hint)
+    except HTTPException as exc:
+        logger.warning("Dify 用実データ取得失敗 (%s): %s", single_code, exc.detail)
+        if hint:
+            merged = dict(hint)
+            merged.setdefault("code", single_code)
+            merged.setdefault("ticker", single_code)
+            return merged
+        return None
 
 
 async def _append_local_diagnosis_block(
@@ -1124,6 +1290,7 @@ def _call_dify_chat_api(
     *,
     code: Optional[str] = None,
     mode: Optional[str] = None,
+    screen_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Dify Chat-App API (blocking) を呼び出す。"""
     if not _is_dify_configured():
@@ -1132,20 +1299,42 @@ def _call_dify_chat_api(
             detail="DIFY_API_KEY が未設定です。ローカル診断モードを使用してください。",
         )
 
-    inputs = _build_dify_inputs(code, mode)
-    body: Dict[str, Any] = {
+    inputs = _build_dify_inputs(code, mode, screen_data)
+
+    request_body: Dict[str, Any] = {
         "inputs": inputs,
         "query": query,
         "response_mode": "blocking",
         "user": "stellar-screener-ui",
     }
     if conversation_id:
-        body["conversation_id"] = conversation_id
+        request_body["conversation_id"] = conversation_id
+
+    # requests.post(json=...) 前に JSON 妥当性を検証（NaN 等の混入を防ぐ）
+    try:
+        json.dumps(request_body, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        logger.error("Dify リクエスト JSON 構築失敗: %s inputs_keys=%s", exc, list(inputs.keys()))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Dify リクエストデータの構築に失敗しました: {exc}",
+        ) from exc
 
     logger.info(
-        "Dify API 送信: "
-        f"query={query!r} code={inputs.get('code', '(なし)')} mode={inputs.get('mode', '(なし)')}"
+        "Dify API 送信: query=%r code=%s mode=%s rsi=%s price=%s vol=%s input_keys=%s",
+        query,
+        inputs.get("code", "(なし)"),
+        inputs.get("mode", "(なし)"),
+        inputs.get("rsi", "(なし)"),
+        inputs.get("current_price", "(なし)"),
+        inputs.get("volume_ratio", "(なし)"),
+        sorted(k for k in inputs.keys() if k != "body"),
     )
+    if inputs.get("rsi") in ("20", "20.0", "20.00"):
+        logger.warning(
+            "Dify inputs の RSI が 20.0 です。ダミーデータ混入の可能性: code=%s",
+            inputs.get("code"),
+        )
 
     try:
         resp = requests.post(
@@ -1154,7 +1343,7 @@ def _call_dify_chat_api(
                 "Authorization": f"Bearer {DIFY_API_KEY}",
                 "Content-Type": "application/json",
             },
-            json=body,
+            json=request_body,
             timeout=180,
         )
     except requests.RequestException as e:
@@ -1242,7 +1431,15 @@ async def _local_chat_response(
         return await _build_local_diagnosis_response(
             query, codes[0], conversation_id, mode=mode, fallback=fallback,
         )
-    screen_data = _local_screen_from_query(query)
+    try:
+        screen_data = await asyncio.to_thread(_local_screen_from_query, query)
+    except HTTPException as exc:
+        return {
+            "answer":          f"診断できませんでした: {exc.detail}",
+            "conversation_id": conversation_id,
+            "source":          "dify_fallback" if fallback else "local",
+            "fallback":        fallback,
+        }
     return {
         "answer":          _format_stellar_answer(screen_data, query),
         "conversation_id": conversation_id,
@@ -1260,8 +1457,16 @@ async def dify_chat_proxy(payload: DifyChatPayload):
 
     dify_code = _resolve_dify_code(payload.code, query)
     dify_mode = payload.mode if payload.mode in RISK_MODES else None
+    screen_data = await _resolve_screen_data_for_dify(
+        dify_code, dify_mode, payload.screen_data,
+    )
     logger.info(
-        f"チャット診断: query={query!r} code={dify_code or '(なし)'} mode={dify_mode or '(なし)'}"
+        "チャット診断: query=%r code=%s mode=%s has_screen_data=%s rsi=%s",
+        query,
+        dify_code or "(なし)",
+        dify_mode or "(なし)",
+        screen_data is not None,
+        (screen_data or {}).get("rsi"),
     )
 
     if not _is_dify_configured():
@@ -1277,6 +1482,7 @@ async def dify_chat_proxy(payload: DifyChatPayload):
             payload.conversation_id,
             code=dify_code,
             mode=dify_mode,
+            screen_data=screen_data,
         )
         answer = dify_result.get("answer", "")
         if _is_dify_stub_answer(answer) and dify_code:

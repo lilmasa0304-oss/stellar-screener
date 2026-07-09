@@ -46,7 +46,9 @@ class StrategyEvaluator:
         change_pct = ((current_price - prev_price) / prev_price) * 100.0
 
         result = self._compute_indicators(ticker, name, df, current_price, change_pct)
-        result.update(self._evaluate_preset_buy(df, current_price, result))
+        preset_evaluations = self.evaluate_preset_snapshots(df, current_price, result)
+        result["preset_evaluations"] = preset_evaluations
+        result.update(self._evaluate_preset_buy(preset_evaluations))
         return result
 
     def _compute_indicators(
@@ -231,97 +233,188 @@ class StrategyEvaluator:
             "swing_cond_macd": cond_macd,
         }
 
-    def _evaluate_preset_buy(
+    def evaluate_preset_snapshots(
         self,
         df: pd.DataFrame,
         close_p: float,
         base: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """押し目買い / 順張り初動プリセットで buy_signal を判定する。"""
-        updates: Dict[str, Any] = {}
+    ) -> Dict[str, Dict[str, Any]]:
+        """押し目・順張りの両プリセットを独立に評価する（同時実行）。"""
+        empty = {
+            "matched": False,
+            "buy_signal": False,
+            "reason": NO_BUY_SIGNAL_REASON,
+        }
+        result = {"oshieme": dict(empty), "junbari": dict(empty)}
 
         if len(df) < 75:
-            return updates
+            return result
 
         try:
-            latest = df.iloc[-1]
-            high_p = float(latest["High"])
-            low_p = float(latest["Low"])
-            open_p = float(latest["Open"])
+            ctx = self._build_preset_context(df, close_p, base)
+            if not ctx:
+                return result
 
-            close_series = df["Close"]
-            ma5 = close_series.rolling(window=5).mean().iloc[-1]
-            ma25_series = close_series.rolling(window=25).mean()
-            ma25 = ma25_series.iloc[-1]
-            ma75 = close_series.rolling(window=75).mean()
+            oshieme = self._check_oshieme_preset(ctx)
+            junbari = self._check_junbari_preset(ctx)
+            result["oshieme"] = oshieme
+            result["junbari"] = junbari
+        except Exception as e:
+            logger.error(f"Preset snapshot error for {base.get('ticker')}: {e}")
+            err = {"matched": False, "buy_signal": False, "reason": f"エラー: {e}"}
+            result["oshieme"] = dict(err)
+            result["junbari"] = dict(err)
 
-            current_rsi = base.get("rsi")
-            if current_rsi is None or pd.isna(ma25) or ma25 == 0:
-                return updates
+        return result
 
-            bb_upper, bb_lower = calculate_bollinger_bands(df, period=20, std_dev=2.0)
+    def _build_preset_context(
+        self,
+        df: pd.DataFrame,
+        close_p: float,
+        base: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """押し目 / 順張り共通のテクニカルコンテキストを構築する。"""
+        latest = df.iloc[-1]
+        high_p = float(latest["High"])
+        low_p = float(latest["Low"])
+        open_p = float(latest["Open"])
 
-            avg_volume_5d = df["Volume"].iloc[-6:-1].mean()
-            current_volume = df["Volume"].iloc[-1]
-            volume_ratio = current_volume / avg_volume_5d if avg_volume_5d > 0 else 1.0
-            ma25_divergence = ((close_p - ma25) / ma25) * 100
+        close_series = df["Close"]
+        ma5 = close_series.rolling(window=5).mean().iloc[-1]
+        ma25_series = close_series.rolling(window=25).mean()
+        ma25 = ma25_series.iloc[-1]
+        ma75 = close_series.rolling(window=75).mean()
 
-            if current_volume < 100000:
-                return updates
+        current_rsi = base.get("rsi")
+        if current_rsi is None or pd.isna(ma25) or ma25 == 0:
+            return None
 
-            body_size = abs(close_p - open_p)
-            upper_shadow = high_p - max(open_p, close_p)
-            if upper_shadow > (body_size * 2) and body_size > 0:
-                return updates
+        _, bb_lower = calculate_bollinger_bands(df, period=20, std_dev=2.0)
 
-            # ① 押し目買い型
-            ma75_now = ma75.iloc[-1]
-            ma75_prev = ma75.iloc[-5]
-            is_long_term_up = (
-                not pd.isna(ma75_now) and not pd.isna(ma75_prev) and ma75_now > ma75_prev
-            )
-            if is_long_term_up and current_rsi <= self.settings["rsi_oshieme_max"]:
-                bb_low = bb_lower.iloc[-1]
-                if not pd.isna(bb_low) and close_p <= bb_low:
-                    updates["buy_signal"] = True
-                    updates["preset_matched"] = "oshieme"
-                    updates["reason"] = (
+        avg_volume_5d = df["Volume"].iloc[-6:-1].mean()
+        current_volume = df["Volume"].iloc[-1]
+        volume_ratio = current_volume / avg_volume_5d if avg_volume_5d > 0 else 1.0
+        ma25_divergence = ((close_p - ma25) / ma25) * 100
+
+        if current_volume < 100000:
+            return None
+
+        body_size = abs(close_p - open_p)
+        upper_shadow = high_p - max(open_p, close_p)
+        if upper_shadow > (body_size * 2) and body_size > 0:
+            return None
+
+        return {
+            "close_p": close_p,
+            "current_rsi": current_rsi,
+            "ma5": ma5,
+            "ma25": ma25,
+            "ma25_series": ma25_series,
+            "close_series": close_series,
+            "ma75": ma75,
+            "bb_lower": bb_lower,
+            "volume_ratio": volume_ratio,
+            "ma25_divergence": ma25_divergence,
+        }
+
+    def _check_oshieme_preset(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        """押し目買い型プリセットの判定。"""
+        current_rsi = ctx["current_rsi"]
+        close_p = ctx["close_p"]
+        ma75 = ctx["ma75"]
+        bb_lower = ctx["bb_lower"]
+
+        ma75_now = ma75.iloc[-1]
+        ma75_prev = ma75.iloc[-5]
+        is_long_term_up = (
+            not pd.isna(ma75_now) and not pd.isna(ma75_prev) and ma75_now > ma75_prev
+        )
+        if is_long_term_up and current_rsi <= self.settings["rsi_oshieme_max"]:
+            bb_low = bb_lower.iloc[-1]
+            if not pd.isna(bb_low) and close_p <= bb_low:
+                return {
+                    "matched": True,
+                    "buy_signal": True,
+                    "reason": (
                         f"【神の押し目】長期上昇中の奇跡的な急落。"
                         f"RSIは{current_rsi:.1f}%と完全に底値圏。高値掴みリスクは極めて低いです。"
-                    )
-                    return updates
+                    ),
+                }
+        return {
+            "matched": False,
+            "buy_signal": False,
+            "reason": NO_BUY_SIGNAL_REASON,
+        }
 
-            # ② 順張り初動型
-            ma5_prev = close_series.rolling(window=5).mean().iloc[-2]
-            ma25_prev = ma25_series.iloc[-2]
-            is_gold_cross = (
-                not pd.isna(ma5)
-                and not pd.isna(ma25)
-                and not pd.isna(ma5_prev)
-                and not pd.isna(ma25_prev)
-                and ma5_prev <= ma25_prev
-                and ma5 > ma25
-            )
-            rsi_in_safe_zone = (
-                self.settings["rsi_junbari_min"] <= current_rsi <= self.settings["rsi_junbari_max"]
-            )
-            volume_ok = volume_ratio >= self.settings["volume_growth_ratio"]
+    def _check_junbari_preset(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        """順張り初動型プリセットの判定。"""
+        current_rsi = ctx["current_rsi"]
+        ma5 = ctx["ma5"]
+        ma25 = ctx["ma25"]
+        ma25_series = ctx["ma25_series"]
+        close_series = ctx["close_series"]
+        volume_ratio = ctx["volume_ratio"]
+        ma25_divergence = ctx["ma25_divergence"]
 
-            if is_gold_cross and rsi_in_safe_zone and volume_ok:
-                if ma25_divergence > self.settings["max_ma25_divergence"]:
-                    return updates
+        ma5_prev = close_series.rolling(window=5).mean().iloc[-2]
+        ma25_prev = ma25_series.iloc[-2]
+        is_gold_cross = (
+            not pd.isna(ma5)
+            and not pd.isna(ma25)
+            and not pd.isna(ma5_prev)
+            and not pd.isna(ma25_prev)
+            and ma5_prev <= ma25_prev
+            and ma5 > ma25
+        )
+        rsi_in_safe_zone = (
+            self.settings["rsi_junbari_min"] <= current_rsi <= self.settings["rsi_junbari_max"]
+        )
+        volume_ok = volume_ratio >= self.settings["volume_growth_ratio"]
 
-                updates["buy_signal"] = True
-                updates["preset_matched"] = "junbari"
-                updates["reason"] = (
+        if is_gold_cross and rsi_in_safe_zone and volume_ok:
+            if ma25_divergence > self.settings["max_ma25_divergence"]:
+                return {
+                    "matched": False,
+                    "buy_signal": False,
+                    "reason": (
+                        f"25日線乖離率 {ma25_divergence:.1f}% が上限 "
+                        f"{self.settings['max_ma25_divergence']}% を超過しています。"
+                    ),
+                }
+            return {
+                "matched": True,
+                "buy_signal": True,
+                "reason": (
                     f"【上昇初動】25日線からの乖離率も{ma25_divergence:.1f}%と低く、"
                     f"出来高急増（{volume_ratio:.1f}倍）を伴う本物のクロス。"
                     f"ここからのエントリーなら安全圏です。"
-                )
+                ),
+            }
+        return {
+            "matched": False,
+            "buy_signal": False,
+            "reason": NO_BUY_SIGNAL_REASON,
+        }
 
-        except Exception as e:
-            logger.error(f"Preset buy evaluation error for {base.get('ticker')}: {e}")
-            updates["reason"] = f"エラー: {str(e)}"
+    def _evaluate_preset_buy(
+        self,
+        preset_evaluations: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """両プリセット評価から buy_signal を決定する（押し目を優先）。"""
+        updates: Dict[str, Any] = {}
+        oshieme = preset_evaluations.get("oshieme") or {}
+        junbari = preset_evaluations.get("junbari") or {}
+
+        if oshieme.get("matched"):
+            updates["buy_signal"] = True
+            updates["preset_matched"] = "oshieme"
+            updates["reason"] = oshieme.get("reason", NO_BUY_SIGNAL_REASON)
+            return updates
+
+        if junbari.get("matched"):
+            updates["buy_signal"] = True
+            updates["preset_matched"] = "junbari"
+            updates["reason"] = junbari.get("reason", NO_BUY_SIGNAL_REASON)
 
         return updates
 
