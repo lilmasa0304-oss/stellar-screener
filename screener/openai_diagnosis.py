@@ -7,14 +7,60 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
 from openai import APIError, OpenAI
 
 from screener.fundamentals import format_fundamentals_lines
 
 logger = logging.getLogger(__name__)
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+_PLACEHOLDER_KEYS = frozenset({
+    "your_openai_api_key_here",
+    "sk-your-key-here",
+    "sk-xxxxxxxx",
+})
+
+_dotenv_loaded = False
+
+
+def _ensure_dotenv() -> None:
+    """.env と OS 環境変数を読み込む（Render 等の本番 env は上書きしない）。"""
+    global _dotenv_loaded
+    if not _dotenv_loaded:
+        load_dotenv(override=False)
+        _dotenv_loaded = True
+
+
+def _normalize_secret(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return value.strip().strip('"').strip("'")
+
+
+def get_openai_api_key() -> str:
+    """OPENAI_API_KEY を実行時に os.environ から取得する。"""
+    _ensure_dotenv()
+    return _normalize_secret(os.environ.get("OPENAI_API_KEY"))
+
+
+def get_openai_model() -> str:
+    """OPENAI_MODEL を実行時に os.environ から取得する。"""
+    _ensure_dotenv()
+    model = _normalize_secret(os.environ.get("OPENAI_MODEL")) or "gpt-4o"
+    return model
+
+
+def is_openai_configured() -> bool:
+    """OPENAI_API_KEY が有効に設定されているか。"""
+    key = get_openai_api_key()
+    if not key:
+        return False
+    if key.lower() in _PLACEHOLDER_KEYS:
+        return False
+    if key.startswith("sk-"):
+        return len(key) > 20
+    return len(key) >= 20
+
 
 SYSTEM_PROMPT = (
     "あなたは日本の株式市場に精通した精鋭の投資アナリストです。"
@@ -26,18 +72,6 @@ SYSTEM_PROMPT = (
     "実践的なアドバイスを必ず盛り込んでください。"
     "口調は、信頼感のあるエリートプロトレーダーのビジネス言語で統一すること。"
 )
-
-
-def is_openai_configured() -> bool:
-    """OPENAI_API_KEY が有効に設定されているか。"""
-    if not OPENAI_API_KEY:
-        return False
-    placeholders = (
-        "your_openai_api_key_here",
-        "sk-your-key-here",
-        "sk-xxxxxxxx",
-    )
-    return OPENAI_API_KEY not in placeholders and OPENAI_API_KEY.startswith("sk-")
 
 
 def _serialize_fundamentals(fundamentals: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -128,15 +162,17 @@ def build_diagnosis_user_message(
 
 def call_openai_diagnosis(user_message: str) -> str:
     """OpenAI Chat Completions API で統合診断テキストを生成する。"""
+    api_key = get_openai_api_key()
     if not is_openai_configured():
         raise RuntimeError(
             "OPENAI_API_KEY が未設定です。.env または環境変数に設定してください。"
         )
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    model = get_openai_model()
+    client = OpenAI(api_key=api_key)
     try:
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},

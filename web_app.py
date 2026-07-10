@@ -9,8 +9,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
 from dotenv import load_dotenv
+
+load_dotenv(override=False)
+
+import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -19,9 +22,10 @@ from screener.config import Config
 from screener.data_fetcher import DataFetcher
 from screener.fundamentals import fetch_fundamentals
 from screener.openai_diagnosis import (
-    OPENAI_MODEL,
     build_diagnosis_user_message,
     call_openai_diagnosis,
+    get_openai_api_key,
+    get_openai_model,
     is_openai_configured,
 )
 from screener.jp_stock_code import (
@@ -59,8 +63,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-load_dotenv()
-
 # ── JPX400 リアルタイムスキャン（インメモリ・直近結果キャッシュ） ─────────────
 _jpx400_progress: Dict[str, Any] = {
     "status":    "idle",   # idle | running | completed | failed
@@ -86,6 +88,18 @@ async def lifespan(app: FastAPI):
     # 起動時
     storage.init_db()
     logger.info("SQLite DB を初期化しました。")
+
+    if is_openai_configured():
+        logger.info(
+            "OpenAI 接続可 (model=%s, key_len=%d)",
+            get_openai_model(),
+            len(get_openai_api_key()),
+        )
+    else:
+        logger.warning(
+            "OpenAI 未設定: OPENAI_API_KEY が空または無効です (env_present=%s)",
+            bool(get_openai_api_key()),
+        )
 
     # Vercel サーバーレス / DISABLE_SCHEDULER=1 では常駐スケジューラーを動かさない
     if not IS_VERCEL and not DISABLE_SCHEDULER:
@@ -1057,7 +1071,7 @@ async def _run_openai_diagnosis(
     return {
         "answer": answer,
         "source": "openai",
-        "model":  OPENAI_MODEL,
+        "model":  get_openai_model(),
     }
 
 
@@ -1108,8 +1122,9 @@ def chat_status(probe: bool = False):
     result: Dict[str, Any] = {
         "configured": configured,
         "provider":   "openai",
-        "model":      OPENAI_MODEL,
+        "model":      get_openai_model(),
         "mode":       "openai" if configured else "unconfigured",
+        "env_present": bool(get_openai_api_key()),
     }
     if probe and configured:
         result["probe"] = {"reachable": True, "provider": "openai"}
@@ -1125,8 +1140,9 @@ def health_check():
         "status":          "ok",
         "platform":        "render" if IS_RENDER else ("vercel" if IS_VERCEL else "local"),
         "openai_configured": is_openai_configured(),
+        "openai_env_present": bool(get_openai_api_key()),
         "chat_mode":       "openai" if is_openai_configured() else "unconfigured",
-        "openai_model":    OPENAI_MODEL,
+        "openai_model":    get_openai_model(),
         "ticker_count":    len(cfg.tickers),
         "universe":        cfg.universe or "custom",
         "scheduler":       "disabled" if DISABLE_SCHEDULER else "active",
