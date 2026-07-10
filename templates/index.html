@@ -409,12 +409,12 @@
                 <div class="flex-1 min-w-0">
                     <div class="flex flex-wrap justify-between items-start gap-2">
                         <h2 class="section-title text-cyan-400">④ 統合AI診断チャット（テクニカル＆ファンダメンタルズ）</h2>
-                        <span id="dify-status-badge"
+                        <span id="ai-status-badge"
                             class="text-xs bg-slate-900 text-slate-400 border border-slate-700 px-2.5 py-1 rounded font-bold mono-font">接続確認中</span>
                     </div>
                     <p class="section-desc">
                         スキャンした銘柄コードを入力すると、チャート分析に加え、業績や財務（ファンダメンタルズ）も含めてAIが総合的に診断します。
-                        <span id="dify-mode-label" class="text-cyan-500/80">接続確認中</span>
+                        <span id="ai-mode-label" class="text-cyan-500/80">接続確認中</span>
                     </p>
                 </div>
             </div>
@@ -447,7 +447,6 @@
 
     <script>
         let selectedRiskMode = '堅実';
-        let conversationId = null;
         let isChatBusy = false;
         let isScanRunning = false;
         let watchlistTickers = [];
@@ -521,7 +520,7 @@
             };
         }
 
-        function buildDifyRequest(rawInput = null, options = {}) {
+        function buildChatRequest(rawInput = null, options = {}) {
             const useWatchlist = options.useWatchlist === true;
             const trimmed = normalizeStockInput(rawInput || '');
             let codes = null;
@@ -795,7 +794,7 @@
                     </button>
                 `;
                 row.querySelector('button').addEventListener('click', () => {
-                    diagnoseHitWithDify(hit);
+                    diagnoseHitWithAi(hit);
                 });
                 listEl.appendChild(row);
             });
@@ -803,12 +802,12 @@
             document.getElementById('scan-inline-zone').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
 
-        async function diagnoseHitWithDify(hit) {
+        async function diagnoseHitWithAi(hit) {
             const ticker = hit?.ticker || hit;
             const name = hit?.name || '';
             const code = extractStockCode(ticker);
             if (!code) return;
-            await sendToDify({
+            await sendToAiDiagnosis({
                 query: code,
                 code,
                 mode: selectedRiskMode,
@@ -920,7 +919,7 @@
             document.getElementById('chat-input').disabled = busy;
         }
 
-        async function sendToDify({ query, displayText, code = null, mode = null, screenData = null }) {
+        async function sendToAiDiagnosis({ query, displayText, code = null, mode = null, screenData = null }) {
             if (!query || !query.trim() || isChatBusy) return;
 
             setChatBusy(true);
@@ -928,7 +927,7 @@
 
             appendUserMessage(displayText);
             const stellarEl = appendStellarMessageShell();
-            stellarEl.textContent = 'STELLAR が診断中...';
+            stellarEl.textContent = 'OpenAI が統合診断を生成中...';
             const statusParts = [];
             if (code) statusParts.push(`code: ${code}`);
             if (mode) statusParts.push(`mode: ${mode}`);
@@ -937,16 +936,13 @@
                 ? `AI 診断中... (${statusParts.join(' / ')})`
                 : 'AI 診断中...';
 
-            const payload = {
-                query,
-                conversation_id: conversationId,
-            };
+            const payload = { query };
             if (code) payload.code = code;
             if (mode) payload.mode = mode;
             if (screenData) payload.screen_data = screenData;
 
             try {
-                const response = await fetch('/api/dify/chat', {
+                const response = await fetch('/api/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
@@ -960,13 +956,10 @@
                     throw new Error(detail || `サーバーエラー (${response.status})`);
                 }
 
-                conversationId = data.conversation_id || conversationId;
                 const answer = data.answer || '（応答が空でした）';
                 await typeOutMessage(stellarEl, answer);
-                const sourceLabel = data.source === 'dify'
-                    ? 'Dify AI 診断'
-                    : (data.fallback ? 'ローカル診断（Dify代替）' : 'ローカル実データ診断');
-                scanStatus.textContent = `${sourceLabel} が完了しました。`;
+                const modelLabel = data.model ? ` (${data.model})` : '';
+                scanStatus.textContent = `統合AI診断${modelLabel} が完了しました。`;
             } catch (error) {
                 stellarEl.classList.remove('typing-cursor');
                 stellarEl.textContent = `エラー: ${error.message}`;
@@ -980,7 +973,7 @@
         async function diagnoseWatchlistTicker(ticker) {
             const code = extractStockCode(ticker);
             if (!code) return;
-            await sendToDify({
+            await sendToAiDiagnosis({
                 query: code,
                 code,
                 mode: selectedRiskMode,
@@ -1001,14 +994,14 @@
                 return;
             }
 
-            const request = buildDifyRequest(query);
+            const request = buildChatRequest(query);
             if (request) {
-                await sendToDify(request);
+                await sendToAiDiagnosis(request);
                 return;
             }
 
             const code = extractStockCode(query);
-            await sendToDify({
+            await sendToAiDiagnosis({
                 query: code || query,
                 code: code || undefined,
                 mode: selectedRiskMode,
@@ -1016,28 +1009,19 @@
             });
         }
 
-        async function loadDifyStatus() {
-            const badge = document.getElementById('dify-status-badge');
-            const modeLabel = document.getElementById('dify-mode-label');
+        async function loadAiStatus() {
+            const badge = document.getElementById('ai-status-badge');
+            const modeLabel = document.getElementById('ai-mode-label');
             try {
-                const status = await fetch('/api/dify/status?probe=1').then((r) => r.json());
-                const probe = status.probe || {};
-                if (status.configured && probe.reachable) {
-                    badge.textContent = 'Dify AI 接続可';
+                const status = await fetch('/api/chat/status').then((r) => r.json());
+                if (status.configured) {
+                    badge.textContent = 'OpenAI 接続可';
                     badge.className = 'text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded font-bold mono-font';
-                    if (modeLabel) modeLabel.textContent = 'Dify AI + ローカル診断（テクニカル / ファンダメンタルズ）';
-                } else if (status.configured) {
-                    badge.textContent = 'Dify 接続不可';
-                    badge.className = 'text-xs bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded font-bold mono-font';
-                    if (modeLabel) modeLabel.textContent = 'ローカル診断で代替中';
-                } else if (status.local_diagnosis_available) {
-                    badge.textContent = 'ローカル診断';
-                    badge.className = 'text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 px-2.5 py-1 rounded font-bold mono-font';
-                    if (modeLabel) modeLabel.textContent = 'Yahoo Finance 実データ';
+                    if (modeLabel) modeLabel.textContent = `モデル: ${status.model || 'gpt-4o'}`;
                 } else {
                     badge.textContent = 'APIキー未設定';
                     badge.className = 'text-xs bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded font-bold mono-font';
-                    if (modeLabel) modeLabel.textContent = '未設定';
+                    if (modeLabel) modeLabel.textContent = 'OPENAI_API_KEY を設定してください';
                 }
             } catch (_) {
                 badge.textContent = '接続不明';
@@ -1047,7 +1031,7 @@
 
         selectRiskMode('堅実');
         loadWatchlist();
-        loadDifyStatus();
+        loadAiStatus();
     </script>
 </body>
 

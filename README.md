@@ -11,8 +11,7 @@ JPX日経400を対象に、`yfinance` で株価データを取得・テクニカ
    - ボタン操作で約400銘柄をリアルタイム走査
    - 結果はアプリ内に即時表示
 3. **統合AI診断チャット**
-   - テクニカル + ファンダメンタルズ（PER / PBR / ROE 等）の総合診断
-   - Dify 連携（任意）またはローカル診断フォールバック
+   - OpenAI API（gpt-4o 等）によるテクニカル + ファンダメンタルズの総合診断
 
 ---
 
@@ -36,8 +35,8 @@ copy .env.template .env
 
 | 変数 | 説明 |
 |---|---|
-| `DIFY_API_KEY` | Dify AI チャット用（未設定時はローカル診断） |
-| `DIFY_BASE_URL` | Dify API ベース URL（デフォルト: `https://api.dify.ai/v1`） |
+| `OPENAI_API_KEY` | OpenAI API キー（統合AI診断に必須） |
+| `OPENAI_MODEL` | 使用モデル（デフォルト: `gpt-4o`） |
 | `DB_PATH` | SQLite パス（デフォルト: `data/screener.db`） |
 
 ### 3. 設定ファイル (`config.yaml`)

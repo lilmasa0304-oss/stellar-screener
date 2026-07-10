@@ -41,7 +41,7 @@ services:
         value: "0"
 
       # --- 以下は Render UI から手動設定（sync: false）---
-      - key: DIFY_API_KEY
+      - key: OPENAI_API_KEY
         sync: false
-      - key: DIFY_BASE_URL
-        value: https://api.dify.ai/v1
+      - key: OPENAI_MODEL
+        value: gpt-4o

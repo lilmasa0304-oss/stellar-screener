@@ -14,6 +14,7 @@ numpy>=1.26.0
 pyyaml>=6.0.1
 python-dotenv>=1.0.1
 requests>=2.31.0
+openai>=1.40.0
 
 # 定時スキャン（Render / ローカル常駐用）
 APScheduler>=3.10.4

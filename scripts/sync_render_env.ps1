@@ -103,8 +103,8 @@ Get-Content $EnvFile -Encoding UTF8 | ForEach-Object {
 }
 
 $syncKeys = @(
-    "DIFY_API_KEY",
-    "DIFY_BASE_URL"
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL"
 )
 
 $existing = Invoke-RenderApi -Method GET -Uri "https://api.render.com/v1/services/$serviceId/env-vars?limit=100"
@@ -153,4 +153,4 @@ if ($Deploy) {
 }
 
 Write-Host "  https://stellar-screener.onrender.com/health" -ForegroundColor Gray
-Write-Host '  dify_configured: true になれば OK（未設定時はローカル診断モード）' -ForegroundColor Gray
+Write-Host '  openai_configured: true になれば OK' -ForegroundColor Gray
