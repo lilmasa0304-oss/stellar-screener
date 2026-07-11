@@ -133,7 +133,14 @@ def start_scheduler(
 
     tz = pytz.timezone(timezone)
 
-    _scheduler = BackgroundScheduler(timezone=tz)
+    _scheduler = BackgroundScheduler(
+        timezone=tz,
+        job_defaults={
+            "coalesce": True,
+            "max_instances": 1,
+            "misfire_grace_time": 3600,
+        },
+    )
     _scheduler.add_job(
         _run_jpx400_scan_job,
         trigger=CronTrigger(
@@ -145,7 +152,6 @@ def start_scheduler(
         id="daily_jpx400_scan",
         name="JPX400 日次スキャン",
         replace_existing=True,
-        misfire_grace_time=3600,  # 1時間以内なら遅延起動を許容
     )
 
     _scheduler.start()

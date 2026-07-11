@@ -20,7 +20,7 @@ services:
     region: singapore
     branch: main
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: uvicorn web_app:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn web_app:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 120 --limit-concurrency 20
     healthCheckPath: /health
 
     envVars:
@@ -36,9 +36,9 @@ services:
       - key: DB_PATH
         value: data/screener.db
 
-      # 定時スキャン: GitHub Actions 運用時は "1" にして Render 側スケジューラーを無効化
+      # 定時スキャン: Render 本番ではコード側でも無効化。GitHub Actions 運用を推奨
       - key: DISABLE_SCHEDULER
-        value: "0"
+        value: "1"
 
       # --- 以下は Render UI から手動設定（sync: false）---
       - key: OPENAI_API_KEY

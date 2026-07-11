@@ -83,6 +83,21 @@ IS_RENDER = os.getenv("RENDER") == "true"
 DISABLE_SCHEDULER = os.getenv("DISABLE_SCHEDULER", "0").lower() in ("1", "true", "yes")
 
 
+def _scheduler_enabled() -> bool:
+    """Render / Vercel 本番、または明示無効時は APScheduler を起動しない。"""
+    return not (IS_VERCEL or IS_RENDER or DISABLE_SCHEDULER)
+
+
+def _scheduler_disable_reason() -> str | None:
+    if IS_RENDER:
+        return "render_memory_guard"
+    if IS_VERCEL:
+        return "vercel_serverless"
+    if DISABLE_SCHEDULER:
+        return "disabled_by_env"
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 起動時
@@ -101,17 +116,25 @@ async def lifespan(app: FastAPI):
             bool(get_openai_api_key()),
         )
 
-    # Vercel サーバーレス / DISABLE_SCHEDULER=1 では常駐スケジューラーを動かさない
-    if not IS_VERCEL and not DISABLE_SCHEDULER:
+    if _scheduler_enabled():
         start_scheduler(hour=7, minute=0, timezone="UTC")
         logger.info("定時スキャンスケジューラーを起動しました（平日 16:00 JST）。")
-    elif DISABLE_SCHEDULER:
-        logger.info("DISABLE_SCHEDULER=1 のためスケジューラーは無効です。")
+    else:
+        reason = _scheduler_disable_reason()
+        if reason == "render_memory_guard":
+            logger.info(
+                "Render 本番のため APScheduler を無効化しました。"
+                "定時スキャンは GitHub Actions (.github/workflows/daily_screener.yml) を使用してください。"
+            )
+        elif reason == "vercel_serverless":
+            logger.info("Vercel サーバーレス環境のためスケジューラーは無効です。")
+        elif reason == "disabled_by_env":
+            logger.info("DISABLE_SCHEDULER=1 のためスケジューラーは無効です。")
 
     yield
 
     # 終了時
-    if not IS_VERCEL and not DISABLE_SCHEDULER:
+    if _scheduler_enabled():
         stop_scheduler()
 
 
@@ -1145,8 +1168,9 @@ def health_check():
         "openai_model":    get_openai_model(),
         "ticker_count":    len(cfg.tickers),
         "universe":        cfg.universe or "custom",
-        "scheduler":       "disabled" if DISABLE_SCHEDULER else "active",
-        "next_scan_time":  None if DISABLE_SCHEDULER else get_next_run_time(),
+        "scheduler":       "active" if _scheduler_enabled() else "disabled",
+        "scheduler_reason": _scheduler_disable_reason(),
+        "next_scan_time":  get_next_run_time() if _scheduler_enabled() else None,
         "db_path":         str(storage.DB_PATH.resolve()),
     }
 
