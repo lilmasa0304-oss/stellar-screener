@@ -25,6 +25,7 @@ from screener.openai_diagnosis import (
     build_diagnosis_user_message,
     call_openai_diagnosis,
     get_openai_api_key,
+    get_openai_base_url,
     get_openai_model,
     is_openai_configured,
 )
@@ -1146,6 +1147,7 @@ def chat_status(probe: bool = False):
         "configured": configured,
         "provider":   "openai",
         "model":      get_openai_model(),
+        "base_url":   get_openai_base_url(),
         "mode":       "openai" if configured else "unconfigured",
         "env_present": bool(get_openai_api_key()),
     }
@@ -1166,6 +1168,7 @@ def health_check():
         "openai_env_present": bool(get_openai_api_key()),
         "chat_mode":       "openai" if is_openai_configured() else "unconfigured",
         "openai_model":    get_openai_model(),
+        "openai_base_url": get_openai_base_url(),
         "ticker_count":    len(cfg.tickers),
         "universe":        cfg.universe or "custom",
         "scheduler":       "active" if _scheduler_enabled() else "disabled",

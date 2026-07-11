@@ -45,3 +45,5 @@ services:
         sync: false
       - key: OPENAI_MODEL
         value: gpt-4o
+      - key: OPENAI_BASE_URL
+        value: https://api.openai.com/v1

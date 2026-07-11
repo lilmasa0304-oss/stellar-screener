@@ -4,229 +4,35 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import socket
 from typing import Any, Dict, List, Optional
 
-import httpx
-from dotenv import load_dotenv
-from openai import (
-    APIConnectionError,
-    APIError,
-    APITimeoutError,
-    OpenAI,
-    RateLimitError,
-)
-from tenacity import (
-    before_sleep_log,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+from openai import APIError
 
 from screener.fundamentals import format_fundamentals_lines
+from screener.openai_client import (
+    OPENAI_MAX_ATTEMPTS,
+    RETRYABLE_EXCEPTIONS,
+    create_chat_completion,
+    create_openai_client,
+    get_openai_api_key,
+    get_openai_base_url,
+    get_openai_model,
+    is_openai_configured,
+    log_openai_exception,
+)
 
 logger = logging.getLogger(__name__)
 
-_OPENAI_TIMEOUT_SEC = 60.0
-_OPENAI_CONNECT_TIMEOUT_SEC = 30.0
-_OPENAI_MAX_ATTEMPTS = 3
-_OPENAI_RETRY_WAIT_MIN_SEC = 2
-_OPENAI_RETRY_WAIT_MAX_SEC = 10
-_OPENAI_HOST = "api.openai.com"
-_RETRYABLE_EXCEPTIONS = (APIConnectionError, APITimeoutError, RateLimitError)
-
-_ipv4_dns_patch_applied = False
-_orig_getaddrinfo = socket.getaddrinfo
-
-_PLACEHOLDER_KEYS = frozenset({
-    "your_openai_api_key_here",
-    "sk-your-key-here",
-    "sk-xxxxxxxx",
-})
-
-_dotenv_loaded = False
-
-
-def _ensure_dotenv() -> None:
-    """.env と OS 環境変数を読み込む（Render 等の本番 env は上書きしない）。"""
-    global _dotenv_loaded
-    if not _dotenv_loaded:
-        load_dotenv(override=False)
-        _dotenv_loaded = True
-
-
-def _normalize_secret(value: Optional[str]) -> str:
-    if not value:
-        return ""
-    return value.strip().strip('"').strip("'")
-
-
-def get_openai_api_key() -> str:
-    """OPENAI_API_KEY を実行時に os.environ から取得する。"""
-    _ensure_dotenv()
-    return _normalize_secret(os.environ.get("OPENAI_API_KEY"))
-
-
-def get_openai_model() -> str:
-    """OPENAI_MODEL を実行時に os.environ から取得する。"""
-    _ensure_dotenv()
-    model = _normalize_secret(os.environ.get("OPENAI_MODEL")) or "gpt-4o"
-    return model
-
-
-def is_openai_configured() -> bool:
-    """OPENAI_API_KEY が有効に設定されているか。"""
-    key = get_openai_api_key()
-    if not key:
-        return False
-    if key.lower() in _PLACEHOLDER_KEYS:
-        return False
-    if key.startswith("sk-"):
-        return len(key) > 20
-    return len(key) >= 20
-
-
-def _ipv4_only_getaddrinfo(
-    host: Any,
-    port: Any,
-    family: int = 0,
-    type: int = 0,
-    proto: int = 0,
-    flags: int = 0,
-):
-    """DNS 解決を IPv4 (AF_INET) のみに制限する（Render 等の IPv6 不通対策）。"""
-    sock_type = type or socket.SOCK_STREAM
-    return _orig_getaddrinfo(host, port, socket.AF_INET, sock_type, proto, flags)
-
-
-def _ensure_ipv4_dns_resolution() -> None:
-    """socket.getaddrinfo を一度だけ IPv4 専用に差し替える。"""
-    global _ipv4_dns_patch_applied
-    if _ipv4_dns_patch_applied:
-        return
-    socket.getaddrinfo = _ipv4_only_getaddrinfo
-    _ipv4_dns_patch_applied = True
-    logger.info("OpenAI 通信: socket.getaddrinfo を IPv4 (AF_INET) のみに制限しました")
-
-
-def _log_openai_network_diagnostics() -> None:
-    """接続前に DNS が IPv4 で解決できるかログに残す。"""
-    try:
-        addresses = _orig_getaddrinfo(
-            _OPENAI_HOST,
-            443,
-            socket.AF_INET,
-            socket.SOCK_STREAM,
-        )
-        ipv4_list = sorted({item[4][0] for item in addresses})
-        logger.info("OpenAI DNS probe (IPv4): %s -> %s", _OPENAI_HOST, ipv4_list)
-    except OSError as exc:
-        logger.error(
-            "OpenAI DNS probe failed (IPv4): host=%s errno=%s message=%s",
-            _OPENAI_HOST,
-            getattr(exc, "errno", None),
-            exc,
-        )
-
-
-def _exception_cause_chain(exc: BaseException) -> List[str]:
-    """例外チェーンを文字列リストで返す（根本原因の特定用）。"""
-    chain: List[str] = []
-    seen: set[int] = set()
-    current: Optional[BaseException] = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        chain.append(f"{type(current).__name__}: {current}")
-        current = current.__cause__ or current.__context__
-    return chain
-
-
-def _create_ipv4_http_client() -> httpx.Client:
-    """IPv4 を強制する httpx クライアント（Render 無料枠の IPv6 遮断対策）。"""
-    _ensure_ipv4_dns_resolution()
-    _log_openai_network_diagnostics()
-    transport = httpx.HTTPTransport(local_address="0.0.0.0", retries=0)
-    timeout = httpx.Timeout(
-        _OPENAI_TIMEOUT_SEC,
-        connect=_OPENAI_CONNECT_TIMEOUT_SEC,
-    )
-    return httpx.Client(
-        transport=transport,
-        timeout=timeout,
-        trust_env=False,
-        http2=False,
-    )
-
-
-def create_openai_client() -> OpenAI:
-    """OpenAI クライアントを生成する（IPv4 強制・タイムアウト付き）。"""
-    api_key = get_openai_api_key()
-    if not is_openai_configured():
-        raise RuntimeError(
-            "OPENAI_API_KEY が未設定です。.env または環境変数に設定してください。"
-        )
-    http_client = _create_ipv4_http_client()
-    return OpenAI(
-        api_key=api_key,
-        http_client=http_client,
-        timeout=_OPENAI_TIMEOUT_SEC,
-        max_retries=0,
-    )
-
-
-def _log_openai_exception(exc: BaseException, *, model: str, stage: str) -> None:
-    """OpenAI 関連エラーの詳細をログに記録する。"""
-    details = {
-        "stage": stage,
-        "model": model,
-        "exc_type": type(exc).__name__,
-        "message": str(exc),
-    }
-    status_code = getattr(exc, "status_code", None)
-    if status_code is not None:
-        details["status_code"] = status_code
-    request_id = getattr(exc, "request_id", None)
-    if request_id:
-        details["request_id"] = request_id
-    body = getattr(exc, "body", None)
-    if body:
-        details["body"] = body
-    cause_chain = _exception_cause_chain(exc)
-    if cause_chain:
-        details["cause_chain"] = cause_chain
-        details["root_cause"] = cause_chain[-1]
-    logger.error(
-        "OpenAI API エラー詳細: %s",
-        json.dumps(details, ensure_ascii=False, default=str),
-        exc_info=True,
-    )
-
-
-@retry(
-    reraise=True,
-    stop=stop_after_attempt(_OPENAI_MAX_ATTEMPTS),
-    wait=wait_exponential(
-        multiplier=2,
-        min=_OPENAI_RETRY_WAIT_MIN_SEC,
-        max=_OPENAI_RETRY_WAIT_MAX_SEC,
-        exp_base=2,
-    ),
-    retry=retry_if_exception_type(_RETRYABLE_EXCEPTIONS),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
-)
-def _create_chat_completion(client: OpenAI, *, model: str, user_message: str):
-    """Chat Completions を呼び出す（接続失敗時は 2s→4s の指数バックオフで最大3回再試行）。"""
-    return client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-        temperature=0.6,
-    )
-
+# web_app 等からの既存 import 互換
+__all__ = [
+    "build_diagnosis_user_message",
+    "call_openai_diagnosis",
+    "create_openai_client",
+    "get_openai_api_key",
+    "get_openai_base_url",
+    "get_openai_model",
+    "is_openai_configured",
+]
 
 SYSTEM_PROMPT = (
     "あなたは日本の株式市場に精通した精鋭の投資アナリストです。"
@@ -344,20 +150,23 @@ def build_diagnosis_user_message(
 def call_openai_diagnosis(user_message: str) -> str:
     """OpenAI Chat Completions API で統合診断テキストを生成する。"""
     model = get_openai_model()
-    client = create_openai_client()
 
     try:
-        response = _create_chat_completion(client, model=model, user_message=user_message)
-    except _RETRYABLE_EXCEPTIONS as exc:
-        _log_openai_exception(exc, model=model, stage="chat.completions.create")
+        response = create_chat_completion(
+            model=model,
+            system_prompt=SYSTEM_PROMPT,
+            user_message=user_message,
+        )
+    except RETRYABLE_EXCEPTIONS as exc:
+        log_openai_exception(exc, model=model, stage="chat.completions.create")
         raise RuntimeError(
-            f"OpenAI API 接続エラー（{_OPENAI_MAX_ATTEMPTS}回再試行後）: {exc}"
+            f"OpenAI API 接続エラー（{OPENAI_MAX_ATTEMPTS}回再試行後）: {exc}"
         ) from exc
     except APIError as exc:
-        _log_openai_exception(exc, model=model, stage="chat.completions.create")
+        log_openai_exception(exc, model=model, stage="chat.completions.create")
         raise RuntimeError(f"OpenAI API エラー: {exc}") from exc
     except Exception as exc:
-        _log_openai_exception(exc, model=model, stage="chat.completions.create")
+        log_openai_exception(exc, model=model, stage="chat.completions.create")
         raise RuntimeError(f"OpenAI API 予期しないエラー: {exc}") from exc
 
     answer = (response.choices[0].message.content or "").strip()
