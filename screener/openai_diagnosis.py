@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+import httpx
 from dotenv import load_dotenv
 from openai import (
     APIConnectionError,
@@ -79,14 +80,25 @@ def is_openai_configured() -> bool:
     return len(key) >= 20
 
 
+def _create_ipv4_http_client() -> httpx.Client:
+    """IPv4 を強制する httpx クライアント（Render 無料枠の IPv6 遮断対策）。"""
+    transport = httpx.HTTPTransport(local_address="0.0.0.0")
+    return httpx.Client(transport=transport, timeout=_OPENAI_TIMEOUT_SEC)
+
+
 def create_openai_client() -> OpenAI:
-    """OpenAI クライアントを生成する（タイムアウト付き）。"""
+    """OpenAI クライアントを生成する（IPv4 強制・タイムアウト付き）。"""
     api_key = get_openai_api_key()
     if not is_openai_configured():
         raise RuntimeError(
             "OPENAI_API_KEY が未設定です。.env または環境変数に設定してください。"
         )
-    return OpenAI(api_key=api_key, timeout=_OPENAI_TIMEOUT_SEC)
+    http_client = _create_ipv4_http_client()
+    return OpenAI(
+        api_key=api_key,
+        http_client=http_client,
+        timeout=_OPENAI_TIMEOUT_SEC,
+    )
 
 
 def _log_openai_exception(exc: BaseException, *, model: str, stage: str) -> None:
