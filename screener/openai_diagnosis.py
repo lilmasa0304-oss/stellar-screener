@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -29,8 +30,13 @@ from screener.fundamentals import format_fundamentals_lines
 logger = logging.getLogger(__name__)
 
 _OPENAI_TIMEOUT_SEC = 60.0
+_OPENAI_CONNECT_TIMEOUT_SEC = 30.0
 _OPENAI_MAX_ATTEMPTS = 3
+_OPENAI_HOST = "api.openai.com"
 _RETRYABLE_EXCEPTIONS = (APIConnectionError, APITimeoutError, RateLimitError)
+
+_ipv4_dns_patch_applied = False
+_orig_getaddrinfo = socket.getaddrinfo
 
 _PLACEHOLDER_KEYS = frozenset({
     "your_openai_api_key_here",
@@ -80,10 +86,76 @@ def is_openai_configured() -> bool:
     return len(key) >= 20
 
 
+def _ipv4_only_getaddrinfo(
+    host: Any,
+    port: Any,
+    family: int = 0,
+    type: int = 0,
+    proto: int = 0,
+    flags: int = 0,
+):
+    """DNS 解決を IPv4 (AF_INET) のみに制限する（Render 等の IPv6 不通対策）。"""
+    sock_type = type or socket.SOCK_STREAM
+    return _orig_getaddrinfo(host, port, socket.AF_INET, sock_type, proto, flags)
+
+
+def _ensure_ipv4_dns_resolution() -> None:
+    """socket.getaddrinfo を一度だけ IPv4 専用に差し替える。"""
+    global _ipv4_dns_patch_applied
+    if _ipv4_dns_patch_applied:
+        return
+    socket.getaddrinfo = _ipv4_only_getaddrinfo
+    _ipv4_dns_patch_applied = True
+    logger.info("OpenAI 通信: socket.getaddrinfo を IPv4 (AF_INET) のみに制限しました")
+
+
+def _log_openai_network_diagnostics() -> None:
+    """接続前に DNS が IPv4 で解決できるかログに残す。"""
+    try:
+        addresses = _orig_getaddrinfo(
+            _OPENAI_HOST,
+            443,
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+        )
+        ipv4_list = sorted({item[4][0] for item in addresses})
+        logger.info("OpenAI DNS probe (IPv4): %s -> %s", _OPENAI_HOST, ipv4_list)
+    except OSError as exc:
+        logger.error(
+            "OpenAI DNS probe failed (IPv4): host=%s errno=%s message=%s",
+            _OPENAI_HOST,
+            getattr(exc, "errno", None),
+            exc,
+        )
+
+
+def _exception_cause_chain(exc: BaseException) -> List[str]:
+    """例外チェーンを文字列リストで返す（根本原因の特定用）。"""
+    chain: List[str] = []
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(f"{type(current).__name__}: {current}")
+        current = current.__cause__ or current.__context__
+    return chain
+
+
 def _create_ipv4_http_client() -> httpx.Client:
     """IPv4 を強制する httpx クライアント（Render 無料枠の IPv6 遮断対策）。"""
-    transport = httpx.HTTPTransport(local_address="0.0.0.0")
-    return httpx.Client(transport=transport, timeout=_OPENAI_TIMEOUT_SEC)
+    _ensure_ipv4_dns_resolution()
+    _log_openai_network_diagnostics()
+    transport = httpx.HTTPTransport(local_address="0.0.0.0", retries=0)
+    timeout = httpx.Timeout(
+        _OPENAI_TIMEOUT_SEC,
+        connect=_OPENAI_CONNECT_TIMEOUT_SEC,
+    )
+    return httpx.Client(
+        transport=transport,
+        timeout=timeout,
+        trust_env=False,
+        http2=False,
+    )
 
 
 def create_openai_client() -> OpenAI:
@@ -98,6 +170,7 @@ def create_openai_client() -> OpenAI:
         api_key=api_key,
         http_client=http_client,
         timeout=_OPENAI_TIMEOUT_SEC,
+        max_retries=0,
     )
 
 
@@ -118,6 +191,10 @@ def _log_openai_exception(exc: BaseException, *, model: str, stage: str) -> None
     body = getattr(exc, "body", None)
     if body:
         details["body"] = body
+    cause_chain = _exception_cause_chain(exc)
+    if cause_chain:
+        details["cause_chain"] = cause_chain
+        details["root_cause"] = cause_chain[-1]
     logger.error(
         "OpenAI API エラー詳細: %s",
         json.dumps(details, ensure_ascii=False, default=str),
