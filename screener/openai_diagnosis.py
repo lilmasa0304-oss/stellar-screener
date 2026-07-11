@@ -8,11 +8,28 @@ import os
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from openai import APIError, OpenAI
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    OpenAI,
+    RateLimitError,
+)
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from screener.fundamentals import format_fundamentals_lines
 
 logger = logging.getLogger(__name__)
+
+_OPENAI_TIMEOUT_SEC = 60.0
+_OPENAI_MAX_ATTEMPTS = 3
+_RETRYABLE_EXCEPTIONS = (APIConnectionError, APITimeoutError, RateLimitError)
 
 _PLACEHOLDER_KEYS = frozenset({
     "your_openai_api_key_here",
@@ -60,6 +77,59 @@ def is_openai_configured() -> bool:
     if key.startswith("sk-"):
         return len(key) > 20
     return len(key) >= 20
+
+
+def create_openai_client() -> OpenAI:
+    """OpenAI クライアントを生成する（タイムアウト付き）。"""
+    api_key = get_openai_api_key()
+    if not is_openai_configured():
+        raise RuntimeError(
+            "OPENAI_API_KEY が未設定です。.env または環境変数に設定してください。"
+        )
+    return OpenAI(api_key=api_key, timeout=_OPENAI_TIMEOUT_SEC)
+
+
+def _log_openai_exception(exc: BaseException, *, model: str, stage: str) -> None:
+    """OpenAI 関連エラーの詳細をログに記録する。"""
+    details = {
+        "stage": stage,
+        "model": model,
+        "exc_type": type(exc).__name__,
+        "message": str(exc),
+    }
+    status_code = getattr(exc, "status_code", None)
+    if status_code is not None:
+        details["status_code"] = status_code
+    request_id = getattr(exc, "request_id", None)
+    if request_id:
+        details["request_id"] = request_id
+    body = getattr(exc, "body", None)
+    if body:
+        details["body"] = body
+    logger.error(
+        "OpenAI API エラー詳細: %s",
+        json.dumps(details, ensure_ascii=False, default=str),
+        exc_info=True,
+    )
+
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(_OPENAI_MAX_ATTEMPTS),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(_RETRYABLE_EXCEPTIONS),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+)
+def _create_chat_completion(client: OpenAI, *, model: str, user_message: str):
+    """Chat Completions を呼び出す（接続・タイムアウト・レート制限時に最大3回再試行）。"""
+    return client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+        temperature=0.6,
+    )
 
 
 SYSTEM_PROMPT = (
@@ -162,26 +232,22 @@ def build_diagnosis_user_message(
 
 def call_openai_diagnosis(user_message: str) -> str:
     """OpenAI Chat Completions API で統合診断テキストを生成する。"""
-    api_key = get_openai_api_key()
-    if not is_openai_configured():
-        raise RuntimeError(
-            "OPENAI_API_KEY が未設定です。.env または環境変数に設定してください。"
-        )
-
     model = get_openai_model()
-    client = OpenAI(api_key=api_key)
+    client = create_openai_client()
+
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.6,
-        )
+        response = _create_chat_completion(client, model=model, user_message=user_message)
+    except _RETRYABLE_EXCEPTIONS as exc:
+        _log_openai_exception(exc, model=model, stage="chat.completions.create")
+        raise RuntimeError(
+            f"OpenAI API 接続エラー（{_OPENAI_MAX_ATTEMPTS}回再試行後）: {exc}"
+        ) from exc
     except APIError as exc:
-        logger.error("OpenAI API エラー: %s", exc)
+        _log_openai_exception(exc, model=model, stage="chat.completions.create")
         raise RuntimeError(f"OpenAI API エラー: {exc}") from exc
+    except Exception as exc:
+        _log_openai_exception(exc, model=model, stage="chat.completions.create")
+        raise RuntimeError(f"OpenAI API 予期しないエラー: {exc}") from exc
 
     answer = (response.choices[0].message.content or "").strip()
     if not answer:
