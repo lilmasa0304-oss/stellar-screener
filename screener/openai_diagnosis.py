@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 _OPENAI_TIMEOUT_SEC = 60.0
 _OPENAI_CONNECT_TIMEOUT_SEC = 30.0
 _OPENAI_MAX_ATTEMPTS = 3
+_OPENAI_RETRY_WAIT_MIN_SEC = 2
+_OPENAI_RETRY_WAIT_MAX_SEC = 10
 _OPENAI_HOST = "api.openai.com"
 _RETRYABLE_EXCEPTIONS = (APIConnectionError, APITimeoutError, RateLimitError)
 
@@ -205,12 +207,17 @@ def _log_openai_exception(exc: BaseException, *, model: str, stage: str) -> None
 @retry(
     reraise=True,
     stop=stop_after_attempt(_OPENAI_MAX_ATTEMPTS),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
+    wait=wait_exponential(
+        multiplier=2,
+        min=_OPENAI_RETRY_WAIT_MIN_SEC,
+        max=_OPENAI_RETRY_WAIT_MAX_SEC,
+        exp_base=2,
+    ),
     retry=retry_if_exception_type(_RETRYABLE_EXCEPTIONS),
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 def _create_chat_completion(client: OpenAI, *, model: str, user_message: str):
-    """Chat Completions を呼び出す（接続・タイムアウト・レート制限時に最大3回再試行）。"""
+    """Chat Completions を呼び出す（接続失敗時は 2s→4s の指数バックオフで最大3回再試行）。"""
     return client.chat.completions.create(
         model=model,
         messages=[
