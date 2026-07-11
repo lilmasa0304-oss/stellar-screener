@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-import yfinance as yf
+from screener.yahoo_session import create_yfinance_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def fetch_fundamentals(yahoo_ticker: str) -> Dict[str, Any]:
         "ticker": yahoo_ticker,
     }
     try:
-        info = yf.Ticker(yahoo_ticker).info or {}
+        info = create_yfinance_ticker(yahoo_ticker).info or {}
     except Exception as exc:
         logger.warning("ファンダメンタルズ取得失敗 (%s): %s", yahoo_ticker, exc)
         result["error"] = str(exc)

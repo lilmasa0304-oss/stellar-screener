@@ -1,8 +1,9 @@
 import time
 import logging
 import pandas as pd
-import yfinance as yf
 from typing import Dict, Optional, Tuple
+
+from screener.yahoo_session import create_yfinance_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ class DataFetcher:
         """
         logger.info(f"Fetching data for {ticker_symbol}...")
         try:
-            ticker = yf.Ticker(ticker_symbol)
+            ticker = create_yfinance_ticker(ticker_symbol)
             
             # Fetch history
             df = ticker.history(period=self.history_period)

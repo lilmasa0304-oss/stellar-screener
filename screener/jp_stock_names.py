@@ -7,12 +7,11 @@ import re
 from functools import lru_cache
 from typing import Optional
 
-import requests
+from screener.yahoo_session import get_yahoo_session
 
 logger = logging.getLogger(__name__)
 
 _YAHOO_SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search"
-_USER_AGENT = "Mozilla/5.0 (compatible; STELLAR-SCREENER/3.0)"
 _ASCII_NAME = re.compile(r"^[A-Za-z0-9\s\.,&'\-()/]+$")
 
 
@@ -47,7 +46,7 @@ def resolve_jp_display_name(ticker: str, fallback: str = "") -> str:
         return fallback.strip()
 
     try:
-        resp = requests.get(
+        resp = get_yahoo_session().get(
             _YAHOO_SEARCH_URL,
             params={
                 "q": symbol,
@@ -55,7 +54,6 @@ def resolve_jp_display_name(ticker: str, fallback: str = "") -> str:
                 "lang": "ja-JP",
                 "region": "JP",
             },
-            headers={"User-Agent": _USER_AGENT},
             timeout=12,
         )
         resp.raise_for_status()
