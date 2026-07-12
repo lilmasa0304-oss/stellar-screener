@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DIFY_API_URL = "https://api.dify.ai/v1"
 DEFAULT_DIFY_USER = "render_user"
-DIFY_INPUT_KEY = "input_value"
+DIFY_INPUT_KEY = "query"
 DIFY_WORKFLOW_TIMEOUT_SEC = 120
 DIFY_MAX_ATTEMPTS = 3
 
@@ -73,7 +73,7 @@ def is_dify_configured() -> bool:
 
 
 def to_dify_input_value(code: str) -> str:
-    """銘柄コードを Dify ワークフロー input_value 形式（例: 7203.T）へ変換する。"""
+    """銘柄コードを Dify ワークフロー query 形式（例: 7203.T）へ変換する。"""
     normalized = normalize_jp_stock_code(code) or code.strip().upper().removesuffix(".T")
     if not normalized:
         raise ValueError(f"無効な銘柄コード: {code}")
@@ -153,7 +153,7 @@ def call_dify_workflow(
         "user": user or get_dify_user(),
     }
     logger.info(
-        "Dify ワークフロー呼び出し: input_value=%s user=%s url=%s",
+        "Dify ワークフロー呼び出し: query=%s user=%s url=%s",
         input_value,
         payload["user"],
         _workflow_run_url(),
@@ -161,11 +161,11 @@ def call_dify_workflow(
     try:
         result = _post_workflow(payload)
         answer = _extract_workflow_answer(result)
-        logger.info("Dify ワークフロー成功: input_value=%s chars=%d", input_value, len(answer))
+        logger.info("Dify ワークフロー成功: query=%s chars=%d", input_value, len(answer))
         return answer
     except Exception as exc:
         logger.error(
-            "Dify ワークフロー失敗: input_value=%s error=%s",
+            "Dify ワークフロー失敗: query=%s error=%s",
             input_value,
             exc,
             exc_info=True,
