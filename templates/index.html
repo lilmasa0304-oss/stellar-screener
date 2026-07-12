@@ -1015,13 +1015,13 @@
             try {
                 const status = await fetch('/api/chat/status').then((r) => r.json());
                 if (status.configured) {
-                    badge.textContent = 'OpenAI 接続可';
+                    badge.textContent = 'Dify 接続可';
                     badge.className = 'text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded font-bold mono-font';
-                    if (modeLabel) modeLabel.textContent = `モデル: ${status.model || 'gpt-4o'}`;
+                    if (modeLabel) modeLabel.textContent = `API: ${status.api_url || 'Dify Workflow'}`;
                 } else {
                     badge.textContent = 'APIキー未設定';
                     badge.className = 'text-xs bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded font-bold mono-font';
-                    if (modeLabel) modeLabel.textContent = 'OPENAI_API_KEY を設定してください';
+                    if (modeLabel) modeLabel.textContent = 'DIFY_API_KEY を設定してください';
                 }
             } catch (_) {
                 badge.textContent = '接続不明';

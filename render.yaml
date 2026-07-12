@@ -41,12 +41,9 @@ services:
         value: "1"
 
       # --- 以下は Render UI から手動設定（sync: false）---
-      - key: OPENAI_API_KEY
+      - key: DIFY_API_KEY
         sync: false
-      - key: OPENAI_MODEL
-        value: gpt-4o
-      - key: OPENAI_BASE_URL
-        value: https://api.openai.com/v1
-      # Render から api.openai.com 直通不可時: Cloudflare AI Gateway 等を設定
-      - key: OPENAI_FALLBACK_BASE_URL
-        sync: false
+      - key: DIFY_API_URL
+        value: https://api.dify.ai/v1
+      - key: DIFY_USER
+        value: render_user

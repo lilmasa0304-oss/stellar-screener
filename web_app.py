@@ -21,19 +21,14 @@ from pydantic import BaseModel, Field
 from screener.config import Config
 from screener.data_fetcher import DataFetcher
 from screener.fundamentals import fetch_fundamentals
-from screener.openai_diagnosis import (
-    build_diagnosis_user_message,
-    call_openai_diagnosis,
-    get_openai_api_key,
-    get_openai_base_url,
-    get_openai_fallback_base_url,
-    get_openai_model,
-    is_openai_configured,
-    probe_openai_connection,
-)
-from screener.openai_client import (
-    bootstrap_openai_route_from_probe,
-    get_active_openai_base_url,
+from screener.dify_workflow import (
+    call_dify_workflow_for_codes,
+    get_dify_api_key,
+    get_dify_api_url,
+    get_dify_user,
+    is_dify_configured,
+    probe_dify_connection,
+    to_dify_input_value,
 )
 from screener.jp_stock_code import (
     extract_jp_stock_code,
@@ -111,26 +106,17 @@ async def lifespan(app: FastAPI):
     storage.init_db()
     logger.info("SQLite DB を初期化しました。")
 
-    if is_openai_configured():
+    if is_dify_configured():
         logger.info(
-            "OpenAI 接続可 (model=%s, key_len=%d)",
-            get_openai_model(),
-            len(get_openai_api_key()),
+            "Dify 接続可 (api_url=%s, key_len=%d, user=%s)",
+            get_dify_api_url(),
+            len(get_dify_api_key()),
+            get_dify_user(),
         )
-        if IS_RENDER:
-            try:
-                probe_report = await asyncio.to_thread(bootstrap_openai_route_from_probe)
-                logger.info(
-                    "OpenAI 起動プローブ: reachable=%s recommended=%s",
-                    probe_report.get("reachable"),
-                    probe_report.get("recommended_base_url"),
-                )
-            except Exception as exc:
-                logger.error("OpenAI 起動プローブ失敗: %s", exc)
     else:
         logger.warning(
-            "OpenAI 未設定: OPENAI_API_KEY が空または無効です (env_present=%s)",
-            bool(get_openai_api_key()),
+            "Dify 未設定: DIFY_API_KEY が空または無効です (env_present=%s)",
+            bool(get_dify_api_key()),
         )
 
     if _scheduler_enabled():
@@ -1087,50 +1073,47 @@ async def _gather_screen_data_for_chat(
     return results
 
 
-async def _run_openai_diagnosis(
+async def _run_dify_diagnosis(
     query: str,
     codes: List[str],
-    mode: Optional[str],
-    hint: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """OpenAI API で統合AI診断を実行する。"""
-    if not is_openai_configured():
+    """Dify ワークフロー API で統合AI診断を実行する。"""
+    if not is_dify_configured():
         raise HTTPException(
             status_code=503,
-            detail="OPENAI_API_KEY が未設定です。環境変数に API キーを設定してください。",
+            detail="DIFY_API_KEY が未設定です。環境変数に API キーを設定してください。",
         )
 
-    screen_data_list = await _gather_screen_data_for_chat(codes, mode, hint)
-    user_message = build_diagnosis_user_message(screen_data_list, query)
     try:
-        answer = await asyncio.to_thread(call_openai_diagnosis, user_message)
+        answer = await asyncio.to_thread(call_dify_workflow_for_codes, codes)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
-        logger.error("OpenAI 診断失敗: %s", exc)
+        logger.error("Dify 診断失敗: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return {
         "answer": answer,
-        "source": "openai",
-        "model":  get_openai_model(),
+        "source": "dify",
+        "provider": "dify_workflow",
+        "input_values": [to_dify_input_value(code) for code in codes],
+        "api_url": get_dify_api_url(),
     }
 
 
 @app.post("/api/chat")
 async def stellar_chat(payload: ChatPayload):
-    """統合AI診断チャット（OpenAI 直接呼び出し）。"""
+    """統合AI診断チャット（Dify ワークフロー API）。"""
     query = payload.query.strip()
     if not query:
         raise HTTPException(status_code=422, detail="query が空です。")
 
-    chat_mode = payload.mode if payload.mode in RISK_MODES else None
     codes = _resolve_chat_codes(payload.code, query)
 
     if not codes:
         parsed = _parse_query_for_screen(query)
         if "code" in parsed:
             codes = [parsed["code"]]
-            if parsed.get("mode") in RISK_MODES:
-                chat_mode = parsed["mode"]
 
     if not codes:
         raise HTTPException(
@@ -1138,14 +1121,13 @@ async def stellar_chat(payload: ChatPayload):
             detail="銘柄コードを入力してください（例: 7203 / 285A）。",
         )
 
-    hint = payload.screen_data if not _is_dummy_screen_data(payload.screen_data) else None
     logger.info(
-        "OpenAI 診断: query=%r codes=%s mode=%s",
+        "Dify 診断: query=%r codes=%s inputs=%s",
         query,
         ",".join(codes),
-        chat_mode or "(なし)",
+        ",".join(to_dify_input_value(code) for code in codes),
     )
-    return await _run_openai_diagnosis(query, codes, chat_mode, hint)
+    return await _run_dify_diagnosis(query, codes)
 
 
 @app.post("/api/dify/chat")
@@ -1157,32 +1139,30 @@ async def dify_chat_legacy(payload: ChatPayload):
 @app.get("/api/chat/status")
 @app.get("/api/dify/status")
 def chat_status(probe: bool = False):
-    """OpenAI 診断チャットの設定状態を返す（APIキー本体は返さない）。"""
-    configured = is_openai_configured()
+    """Dify 診断チャットの設定状態を返す（APIキー本体は返さない）。"""
+    configured = is_dify_configured()
     result: Dict[str, Any] = {
         "configured": configured,
-        "provider":   "openai",
-        "model":      get_openai_model(),
-        "base_url":   get_openai_base_url(),
-        "fallback_base_url": get_openai_fallback_base_url() or None,
-        "active_base_url": get_active_openai_base_url(),
-        "mode":       "openai" if configured else "unconfigured",
-        "env_present": bool(get_openai_api_key()),
+        "provider":   "dify",
+        "api_url":    get_dify_api_url(),
+        "user":       get_dify_user(),
+        "mode":       "dify" if configured else "unconfigured",
+        "env_present": bool(get_dify_api_key()),
     }
     if probe:
-        result["probe"] = probe_openai_connection()
+        result["probe"] = probe_dify_connection()
     return result
 
 
-@app.get("/api/openai/probe")
-def openai_probe():
-    """OpenAI 接続プローブ（DNS / API 到達性を実測）。"""
-    if not is_openai_configured():
+@app.get("/api/dify/probe")
+def dify_probe():
+    """Dify ワークフロー API の接続プローブ。"""
+    if not is_dify_configured():
         raise HTTPException(
             status_code=503,
-            detail="OPENAI_API_KEY が未設定です。",
+            detail="DIFY_API_KEY が未設定です。",
         )
-    return probe_openai_connection()
+    return probe_dify_connection()
 
 
 # ── ヘルスチェック ────────────────────────────────────────────────────────
@@ -1193,13 +1173,13 @@ def health_check():
     return {
         "status":          "ok",
         "platform":        "render" if IS_RENDER else ("vercel" if IS_VERCEL else "local"),
-        "openai_configured": is_openai_configured(),
-        "openai_env_present": bool(get_openai_api_key()),
-        "chat_mode":       "openai" if is_openai_configured() else "unconfigured",
-        "openai_model":    get_openai_model(),
-        "openai_base_url": get_openai_base_url(),
-        "openai_fallback_base_url": get_openai_fallback_base_url() or None,
-        "openai_active_base_url": get_active_openai_base_url(),
+        "openai_configured": False,
+        "openai_env_present": False,
+        "dify_configured": is_dify_configured(),
+        "dify_env_present": bool(get_dify_api_key()),
+        "chat_mode":       "dify" if is_dify_configured() else "unconfigured",
+        "dify_api_url":    get_dify_api_url(),
+        "dify_user":       get_dify_user(),
         "ticker_count":    len(cfg.tickers),
         "universe":        cfg.universe or "custom",
         "scheduler":       "active" if _scheduler_enabled() else "disabled",
