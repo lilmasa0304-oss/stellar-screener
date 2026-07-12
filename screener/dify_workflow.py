@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DIFY_API_URL = "https://api.dify.ai/v1"
 DEFAULT_DIFY_USER = "render_user"
-DIFY_INPUT_KEY = "query"
 DIFY_CHAT_TIMEOUT_SEC = 120
 DIFY_MAX_ATTEMPTS = 3
 
@@ -134,7 +133,7 @@ def call_dify_workflow(
         raise ValueError("Dify へ送る query が空です。")
 
     payload = {
-        "inputs": {DIFY_INPUT_KEY: query},
+        "inputs": {},
         "query": query,
         "response_mode": "blocking",
         "user": user or get_dify_user(),
