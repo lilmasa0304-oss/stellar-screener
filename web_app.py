@@ -1095,7 +1095,7 @@ async def _run_dify_diagnosis(
     return {
         "answer": answer,
         "source": "dify",
-        "provider": "dify_workflow",
+        "provider": "dify_chatflow",
         "input_values": [to_dify_input_value(code) for code in codes],
         "api_url": get_dify_api_url(),
     }

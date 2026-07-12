@@ -1,8 +1,7 @@
-"""Dify ワークフロー API クライアント（株価取得・AI診断は Dify 側で完結）。"""
+"""Dify チャットフロー API クライアント（株価取得・AI診断は Dify 側で完結）。"""
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_DIFY_API_URL = "https://api.dify.ai/v1"
 DEFAULT_DIFY_USER = "render_user"
 DIFY_INPUT_KEY = "query"
-DIFY_WORKFLOW_TIMEOUT_SEC = 120
+DIFY_CHAT_TIMEOUT_SEC = 120
 DIFY_MAX_ATTEMPTS = 3
 
 _PLACEHOLDER_KEYS = frozenset({
@@ -73,15 +72,15 @@ def is_dify_configured() -> bool:
 
 
 def to_dify_input_value(code: str) -> str:
-    """銘柄コードを Dify ワークフロー query 形式（例: 7203.T）へ変換する。"""
+    """銘柄コードを Dify チャットフロー query 形式（例: 7203.T）へ変換する。"""
     normalized = normalize_jp_stock_code(code) or code.strip().upper().removesuffix(".T")
     if not normalized:
         raise ValueError(f"無効な銘柄コード: {code}")
     return f"{normalized}.T"
 
 
-def _workflow_run_url() -> str:
-    return f"{get_dify_api_url()}/workflows/run"
+def _chat_messages_url() -> str:
+    return f"{get_dify_api_url()}/chat-messages"
 
 
 def _request_headers() -> Dict[str, str]:
@@ -91,28 +90,11 @@ def _request_headers() -> Dict[str, str]:
     }
 
 
-def _extract_workflow_answer(payload: Dict[str, Any]) -> str:
-    data = payload.get("data") or {}
-    status = data.get("status")
-    if status == "failed":
-        raise RuntimeError(data.get("error") or "Dify ワークフローが failed になりました。")
-
-    outputs = data.get("outputs") or {}
-    for key in ("text", "result", "answer", "output", "response", "diagnosis"):
-        value = outputs.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-
-    if outputs:
-        for value in outputs.values():
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-            if value is not None and not isinstance(value, (dict, list)):
-                text = str(value).strip()
-                if text:
-                    return text
-
-    raise RuntimeError("Dify ワークフローから空の応答が返されました。")
+def _extract_chat_answer(payload: Dict[str, Any]) -> str:
+    answer = payload.get("answer")
+    if isinstance(answer, str) and answer.strip():
+        return answer.strip()
+    raise RuntimeError("Dify チャットフローから空の応答が返されました。")
 
 
 @retry(
@@ -121,12 +103,12 @@ def _extract_workflow_answer(payload: Dict[str, Any]) -> str:
     wait=wait_exponential(multiplier=2, min=2, max=10),
     retry=retry_if_exception_type((requests.ConnectionError, requests.Timeout)),
 )
-def _post_workflow(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _post_chat_message(payload: Dict[str, Any]) -> Dict[str, Any]:
     response = requests.post(
-        _workflow_run_url(),
+        _chat_messages_url(),
         headers=_request_headers(),
         json=payload,
-        timeout=DIFY_WORKFLOW_TIMEOUT_SEC,
+        timeout=DIFY_CHAT_TIMEOUT_SEC,
     )
     if response.status_code >= 400:
         detail = response.text[:500]
@@ -137,36 +119,41 @@ def _post_workflow(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def call_dify_workflow(
-    input_value: str,
+    keyword: str,
     *,
     user: Optional[str] = None,
 ) -> str:
-    """Dify ワークフロー API を呼び出し、診断テキストを返す。"""
+    """Dify チャットフロー API を呼び出し、診断テキストを返す。"""
     if not is_dify_configured():
         raise RuntimeError(
             "DIFY_API_KEY が未設定です。環境変数に API キーを設定してください。"
         )
 
+    query = (keyword or "").strip()
+    if not query:
+        raise ValueError("Dify へ送る query が空です。")
+
     payload = {
-        "inputs": {DIFY_INPUT_KEY: input_value},
+        "inputs": {DIFY_INPUT_KEY: query},
+        "query": query,
         "response_mode": "blocking",
         "user": user or get_dify_user(),
     }
     logger.info(
-        "Dify ワークフロー呼び出し: query=%s user=%s url=%s",
-        input_value,
+        "Dify チャットフロー呼び出し: query=%s user=%s url=%s",
+        query,
         payload["user"],
-        _workflow_run_url(),
+        _chat_messages_url(),
     )
     try:
-        result = _post_workflow(payload)
-        answer = _extract_workflow_answer(result)
-        logger.info("Dify ワークフロー成功: query=%s chars=%d", input_value, len(answer))
+        result = _post_chat_message(payload)
+        answer = _extract_chat_answer(result)
+        logger.info("Dify チャットフロー成功: query=%s chars=%d", query, len(answer))
         return answer
     except Exception as exc:
         logger.error(
-            "Dify ワークフロー失敗: query=%s error=%s",
-            input_value,
+            "Dify チャットフロー失敗: query=%s error=%s",
+            query,
             exc,
             exc_info=True,
         )
@@ -180,8 +167,8 @@ def call_dify_workflow_for_codes(codes: List[str]) -> str:
 
     sections: List[str] = []
     for code in codes:
-        input_value = to_dify_input_value(code)
-        answer = call_dify_workflow(input_value)
+        query = to_dify_input_value(code)
+        answer = call_dify_workflow(query)
         display_code = code.removesuffix(".T")
         if len(codes) == 1:
             return answer
@@ -190,14 +177,14 @@ def call_dify_workflow_for_codes(codes: List[str]) -> str:
 
 
 def probe_dify_connection(test_input: str = "7203.T") -> Dict[str, Any]:
-    """Dify ワークフロー API の到達性を軽量チェックする。"""
+    """Dify チャットフロー API の到達性を軽量チェックする。"""
     result: Dict[str, Any] = {
         "configured": is_dify_configured(),
         "api_url": get_dify_api_url(),
-        "workflow_url": _workflow_run_url(),
+        "chat_messages_url": _chat_messages_url(),
         "user": get_dify_user(),
         "reachable": False,
-        "test_input": test_input,
+        "test_query": test_input,
     }
     if not is_dify_configured():
         result["error"] = "DIFY_API_KEY が未設定です。"
