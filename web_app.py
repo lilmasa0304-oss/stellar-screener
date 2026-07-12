@@ -31,7 +31,10 @@ from screener.openai_diagnosis import (
     is_openai_configured,
     probe_openai_connection,
 )
-from screener.openai_client import get_active_openai_base_url
+from screener.openai_client import (
+    bootstrap_openai_route_from_probe,
+    get_active_openai_base_url,
+)
 from screener.jp_stock_code import (
     extract_jp_stock_code,
     find_jp_stock_code_in_text,
@@ -114,6 +117,16 @@ async def lifespan(app: FastAPI):
             get_openai_model(),
             len(get_openai_api_key()),
         )
+        if IS_RENDER:
+            try:
+                probe_report = await asyncio.to_thread(bootstrap_openai_route_from_probe)
+                logger.info(
+                    "OpenAI 起動プローブ: reachable=%s recommended=%s",
+                    probe_report.get("reachable"),
+                    probe_report.get("recommended_base_url"),
+                )
+            except Exception as exc:
+                logger.error("OpenAI 起動プローブ失敗: %s", exc)
     else:
         logger.warning(
             "OpenAI 未設定: OPENAI_API_KEY が空または無効です (env_present=%s)",

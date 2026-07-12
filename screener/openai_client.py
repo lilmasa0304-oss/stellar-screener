@@ -98,11 +98,17 @@ def get_active_openai_base_url() -> str:
 
 
 def get_openai_base_url_candidates() -> List[str]:
-    """接続試行順の base_url リスト（優先ルート → フォールバック）。"""
+    """接続試行順の base_url リスト（Render+フォールバック設定時は Gateway のみ）。"""
+    is_render = os.getenv("RENDER") == "true"
     primary = get_openai_base_url()
     fallback = get_openai_fallback_base_url()
-    ordered: List[str] = []
 
+    if is_render and fallback:
+        chosen = _preferred_base_url or fallback
+        logger.info("Render 本番: OpenAI フォールバックルートを使用 (%s)", chosen)
+        return [chosen]
+
+    ordered: List[str] = []
     if _preferred_base_url:
         ordered.append(_preferred_base_url)
     if primary and primary not in ordered:
@@ -110,6 +116,25 @@ def get_openai_base_url_candidates() -> List[str]:
     if fallback and fallback not in ordered:
         ordered.append(fallback)
     return ordered
+
+
+def bootstrap_openai_route_from_probe() -> Dict[str, Any]:
+    """起動時プローブで到達可能な OpenAI ルートを自動選択する。"""
+    if not is_openai_configured():
+        return {"configured": False, "reachable": False}
+
+    report = probe_openai_connection()
+    recommended = report.get("recommended_base_url")
+    if recommended:
+        _set_preferred_base_url(str(recommended))
+        logger.info("OpenAI 起動時プローブ成功: recommended=%s", recommended)
+    else:
+        logger.error(
+            "OpenAI 起動時プローブ失敗: candidates=%s probes=%s",
+            report.get("candidates"),
+            report.get("probes"),
+        )
+    return report
 
 
 def is_openai_configured() -> bool:
