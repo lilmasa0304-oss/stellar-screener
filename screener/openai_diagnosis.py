@@ -14,11 +14,14 @@ from screener.openai_client import (
     RETRYABLE_EXCEPTIONS,
     create_chat_completion,
     create_openai_client,
+    get_active_openai_base_url,
     get_openai_api_key,
     get_openai_base_url,
+    get_openai_fallback_base_url,
     get_openai_model,
     is_openai_configured,
     log_openai_exception,
+    probe_openai_connection,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,7 +33,9 @@ __all__ = [
     "create_openai_client",
     "get_openai_api_key",
     "get_openai_base_url",
+    "get_openai_fallback_base_url",
     "get_openai_model",
+    "probe_openai_connection",
     "is_openai_configured",
 ]
 

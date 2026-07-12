@@ -104,7 +104,9 @@ Get-Content $EnvFile -Encoding UTF8 | ForEach-Object {
 
 $syncKeys = @(
     "OPENAI_API_KEY",
-    "OPENAI_MODEL"
+    "OPENAI_MODEL",
+    "OPENAI_BASE_URL",
+    "OPENAI_FALLBACK_BASE_URL"
 )
 
 $existing = Invoke-RenderApi -Method GET -Uri "https://api.render.com/v1/services/$serviceId/env-vars?limit=100"

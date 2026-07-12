@@ -26,9 +26,12 @@ from screener.openai_diagnosis import (
     call_openai_diagnosis,
     get_openai_api_key,
     get_openai_base_url,
+    get_openai_fallback_base_url,
     get_openai_model,
     is_openai_configured,
+    probe_openai_connection,
 )
+from screener.openai_client import get_active_openai_base_url
 from screener.jp_stock_code import (
     extract_jp_stock_code,
     find_jp_stock_code_in_text,
@@ -1148,12 +1151,25 @@ def chat_status(probe: bool = False):
         "provider":   "openai",
         "model":      get_openai_model(),
         "base_url":   get_openai_base_url(),
+        "fallback_base_url": get_openai_fallback_base_url() or None,
+        "active_base_url": get_active_openai_base_url(),
         "mode":       "openai" if configured else "unconfigured",
         "env_present": bool(get_openai_api_key()),
     }
-    if probe and configured:
-        result["probe"] = {"reachable": True, "provider": "openai"}
+    if probe:
+        result["probe"] = probe_openai_connection()
     return result
+
+
+@app.get("/api/openai/probe")
+def openai_probe():
+    """OpenAI 接続プローブ（DNS / API 到達性を実測）。"""
+    if not is_openai_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="OPENAI_API_KEY が未設定です。",
+        )
+    return probe_openai_connection()
 
 
 # ── ヘルスチェック ────────────────────────────────────────────────────────
@@ -1169,6 +1185,8 @@ def health_check():
         "chat_mode":       "openai" if is_openai_configured() else "unconfigured",
         "openai_model":    get_openai_model(),
         "openai_base_url": get_openai_base_url(),
+        "openai_fallback_base_url": get_openai_fallback_base_url() or None,
+        "openai_active_base_url": get_active_openai_base_url(),
         "ticker_count":    len(cfg.tickers),
         "universe":        cfg.universe or "custom",
         "scheduler":       "active" if _scheduler_enabled() else "disabled",

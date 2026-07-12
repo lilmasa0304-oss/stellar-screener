@@ -47,3 +47,6 @@ services:
         value: gpt-4o
       - key: OPENAI_BASE_URL
         value: https://api.openai.com/v1
+      # Render から api.openai.com 直通不可時: Cloudflare AI Gateway 等を設定
+      - key: OPENAI_FALLBACK_BASE_URL
+        sync: false
