@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DIFY_API_URL = "https://api.dify.ai/v1"
 DEFAULT_DIFY_USER = "render_user"
+DIFY_INPUT_KEY = "query"
 DIFY_CHAT_TIMEOUT_SEC = 120
 DIFY_MAX_ATTEMPTS = 3
 
@@ -89,11 +91,36 @@ def _request_headers() -> Dict[str, str]:
     }
 
 
+def build_chatflow_payload(keyword: str, *, user: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Dify チャットフロー /chat-messages 用ペイロードを組み立てる。
+
+    userinput.query は inputs.query とトップレベル query の両方へ設定する。
+    """
+    query = (keyword or "").strip()
+    if not query:
+        raise ValueError("Dify へ送る query が空です。")
+    return {
+        "inputs": {DIFY_INPUT_KEY: query},
+        "query": query,
+        "response_mode": "blocking",
+        "user": user or get_dify_user(),
+    }
+
+
 def _extract_chat_answer(payload: Dict[str, Any]) -> str:
     answer = payload.get("answer")
     if isinstance(answer, str) and answer.strip():
         return answer.strip()
     raise RuntimeError("Dify チャットフローから空の応答が返されました。")
+
+
+def _parse_dify_error(response: requests.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text[:500]
+    return json.dumps(body, ensure_ascii=False)
 
 
 @retry(
@@ -110,7 +137,7 @@ def _post_chat_message(payload: Dict[str, Any]) -> Dict[str, Any]:
         timeout=DIFY_CHAT_TIMEOUT_SEC,
     )
     if response.status_code >= 400:
-        detail = response.text[:500]
+        detail = _parse_dify_error(response)
         raise RuntimeError(
             f"Dify API エラー (HTTP {response.status_code}): {detail}"
         )
@@ -128,19 +155,12 @@ def call_dify_workflow(
             "DIFY_API_KEY が未設定です。環境変数に API キーを設定してください。"
         )
 
-    query = (keyword or "").strip()
-    if not query:
-        raise ValueError("Dify へ送る query が空です。")
-
-    payload = {
-        "inputs": {},
-        "query": query,
-        "response_mode": "blocking",
-        "user": user or get_dify_user(),
-    }
+    payload = build_chatflow_payload(keyword, user=user)
+    query = payload["query"]
     logger.info(
-        "Dify チャットフロー呼び出し: query=%s user=%s url=%s",
+        "Dify チャットフロー呼び出し: query=%s inputs=%s user=%s url=%s",
         query,
+        payload["inputs"],
         payload["user"],
         _chat_messages_url(),
     )
@@ -151,8 +171,9 @@ def call_dify_workflow(
         return answer
     except Exception as exc:
         logger.error(
-            "Dify チャットフロー失敗: query=%s error=%s",
+            "Dify チャットフロー失敗: query=%s payload=%s error=%s",
             query,
+            payload,
             exc,
             exc_info=True,
         )
@@ -184,6 +205,7 @@ def probe_dify_connection(test_input: str = "7203.T") -> Dict[str, Any]:
         "user": get_dify_user(),
         "reachable": False,
         "test_query": test_input,
+        "payload_shape": build_chatflow_payload(test_input),
     }
     if not is_dify_configured():
         result["error"] = "DIFY_API_KEY が未設定です。"
@@ -197,7 +219,9 @@ def probe_dify_connection(test_input: str = "7203.T") -> Dict[str, Any]:
         )
         result["parameters_status"] = parameters.status_code
         if parameters.ok:
+            params_body = parameters.json()
             result["parameters_ok"] = True
+            result["user_input_form"] = params_body.get("user_input_form")
     except Exception as exc:
         result["parameters_ok"] = False
         result["parameters_error"] = str(exc)

@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from screener.config import Config
 from screener.data_fetcher import DataFetcher
 from screener.fundamentals import fetch_fundamentals
+from screener.dify_http_compat import resolve_dify_stock_code
 from screener.dify_workflow import (
     call_dify_workflow_for_codes,
     get_dify_api_key,
@@ -216,20 +217,39 @@ class UpdateConfigPayload(BaseModel):
 class TickerDiagnosisPayload(BaseModel):
     ticker: Optional[str] = Field(None, description="日本株銘柄コード（例: 1605, 7203, 285A）")
     code:   Optional[str] = Field(None, description="ticker の別名（Dify HTTP ノード互換）")
+    query:  Optional[str] = Field(None, description="Dify userinput.query（7203.T 等）")
+    input_value: Optional[str] = Field(None, description="Dify 開始ノード input_value")
 
     def resolved_ticker(self) -> str:
-        raw = (self.ticker or self.code or "").strip()
+        raw = resolve_dify_stock_code(
+            self.ticker,
+            self.code,
+            self.query,
+            self.input_value,
+        )
         if not raw:
-            raise HTTPException(status_code=422, detail="ticker または code が必要です。")
-        normalized = normalize_jp_stock_code(raw)
-        return normalized or raw.upper().removesuffix(".T")
+            raise HTTPException(
+                status_code=422,
+                detail="ticker / code / query / input_value のいずれかが必要です。",
+            )
+        return raw
 
 
 class ScreenPayload(BaseModel):
-    code:       Optional[str]  = Field(None, description="Dify から送る銘柄コード（例: 1605）")
-    ticker:     Optional[str]  = Field(None, description="銘柄コード（code の別名）")
-    mode:       Optional[str]  = Field(None, description="リスクモード（堅実 / 標準 / 積極）")
-    full_scan:  Optional[bool] = Field(False, description="true のときのみ JPX400 一括スキャンを実行")
+    code:        Optional[str]  = Field(None, description="Dify から送る銘柄コード（例: 1605）")
+    ticker:      Optional[str]  = Field(None, description="銘柄コード（code の別名）")
+    query:       Optional[str]  = Field(None, description="Dify userinput.query（7203.T 等）")
+    input_value: Optional[str]  = Field(None, description="Dify 開始ノード input_value")
+    mode:        Optional[str]  = Field(None, description="リスクモード（堅実 / 標準 / 積極）")
+    full_scan:   Optional[bool] = Field(False, description="true のときのみ JPX400 一括スキャンを実行")
+
+    def resolve_stock_code(self) -> Optional[str]:
+        return resolve_dify_stock_code(
+            self.code,
+            self.ticker,
+            self.query,
+            self.input_value,
+        )
 
 
 class WatchlistPayload(BaseModel):
@@ -865,9 +885,24 @@ async def _execute_bulk_screener(selected_mode: str) -> Dict[str, Any]:
 async def execute_screener(payload: ScreenPayload):
     """
     スクリーニング API。
-    - code / ticker 指定時: 単一銘柄の実診断（Yahoo Finance）
+    - code / ticker / query / input_value 指定時: 単一銘柄の実診断（Yahoo Finance）
     - full_scan 指定時: JPX400 一括スキャン
     """
+    resolved = payload.resolve_stock_code()
+    if resolved:
+        logger.info(
+            "/api/v1/screen 単一銘柄実診断: code=%s payload=%s",
+            resolved,
+            payload.model_dump(exclude_none=True),
+        )
+        try:
+            return await asyncio.to_thread(_diagnose_ticker, resolved, payload.mode)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"/api/v1/screen 単一銘柄エラー (code={resolved}): {e}")
+            raise HTTPException(status_code=500, detail=f"銘柄診断中にエラーが発生しました: {e}") from e
+
     if payload.code is not None:
         code = payload.code.strip()
         if code:
@@ -889,37 +924,48 @@ async def execute_screener(payload: ScreenPayload):
                     "count":  len(stocks),
                     "stocks": stocks,
                 }
-            single = normalized or extract_jp_stock_code(code)
-            if single:
-                logger.info(f"/api/v1/screen 単一銘柄実診断: code={single}")
-                return await asyncio.to_thread(_diagnose_ticker, single, payload.mode)
-            raise HTTPException(
-                status_code=422,
-                detail=f"銘柄コード '{code}' を解析できませんでした。",
-            )
-
-    ticker_code = (payload.ticker or "").strip()
-    if ticker_code:
-        try:
-            return await asyncio.to_thread(_diagnose_ticker, ticker_code)
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.exception(f"/api/v1/screen 単一銘柄エラー (ticker={ticker_code}): {e}")
-            raise HTTPException(status_code=500, detail=f"銘柄診断中にエラーが発生しました: {e}")
 
     selected_mode = payload.mode or "堅実"
     if not payload.full_scan:
+        logger.warning(
+            "/api/v1/screen 422: 銘柄コード未指定 payload=%s",
+            payload.model_dump(exclude_none=True),
+        )
         raise HTTPException(
             status_code=422,
-            detail="code または ticker を指定してください（mode のみでは実データを返しません）。",
+            detail=(
+                "code / ticker / query / input_value のいずれかを指定してください。"
+                "（Dify HTTP ノードは {\"query\": \"7203.T\"} 形式を推奨）"
+            ),
         )
 
     try:
         return await _execute_bulk_screener(selected_mode)
     except Exception as e:
         logger.exception(f"/api/v1/screen 一括スキャンエラー (mode={selected_mode}): {e}")
-        raise HTTPException(status_code=500, detail=f"一括スクリーニング中にエラーが発生しました: {e}")
+        raise HTTPException(status_code=500, detail=f"一括スクリーニング中にエラーが発生しました: {e}") from e
+
+
+@app.get("/api/v1/screen")
+async def execute_screener_get(
+    code: Optional[str] = None,
+    ticker: Optional[str] = None,
+    query: Optional[str] = None,
+    input_value: Optional[str] = None,
+    mode: Optional[str] = None,
+    full_scan: Optional[bool] = False,
+):
+    """Dify HTTP ノード（GET）互換。"""
+    return await execute_screener(
+        ScreenPayload(
+            code=code,
+            ticker=ticker,
+            query=query,
+            input_value=input_value,
+            mode=mode,
+            full_scan=full_scan,
+        )
+    )
 
 
 @app.post("/api/bot/diagnose")
