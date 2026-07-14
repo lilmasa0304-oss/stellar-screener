@@ -19,7 +19,14 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from screener.config import Config
-from screener.data_fetcher import DataFetcher
+from screener.data_fetcher import DataFetcher, create_diagnosis_fetcher
+from screener.diagnosis_cache import (
+    DEFAULT_HISTORY_DAYS,
+    DEFAULT_TTL_SEC,
+    DIAGNOSIS_TIMEOUT_SEC,
+    get_diagnosis,
+    put_diagnosis,
+)
 from screener.fundamentals import fetch_fundamentals
 from screener.dify_http_compat import resolve_dify_stock_code
 from screener.dify_workflow import (
@@ -745,10 +752,18 @@ def _compute_technical_metrics(df) -> Dict[str, float]:
 def _diagnose_ticker(raw_code: str, mode: Optional[str] = None) -> Dict[str, Any]:
     """株価取得 → テクニカル分析 → OpenAI 診断向けレスポンスを組み立てる。"""
     ticker_code = raw_code.strip()
-    yahoo_ticker = _normalize_ticker_code(ticker_code)
+    safe_mode = mode if mode in RISK_MODES else None
 
-    fetcher = DataFetcher(delay_seconds=0.2, history_period="6mo")
-    df, company_name = fetcher.fetch_ticker_data(yahoo_ticker)
+    cached = get_diagnosis(ticker_code, safe_mode)
+    if cached is not None:
+        logger.info("キャッシュヒット (診断): code=%s mode=%s", ticker_code, safe_mode)
+        cached = dict(cached)
+        cached["cached"] = True
+        return cached
+
+    yahoo_ticker = _normalize_ticker_code(ticker_code)
+    fetcher = create_diagnosis_fetcher()
+    df, company_name, ticker_info = fetcher.fetch_ticker_bundle(yahoo_ticker)
     if df is None or df.empty:
         raise HTTPException(
             status_code=404,
@@ -761,12 +776,11 @@ def _diagnose_ticker(raw_code: str, mode: Optional[str] = None) -> Dict[str, Any
     )
     config = read_config_yaml()
     evaluator = StrategyEvaluator(config)
-    safe_mode = mode if mode in RISK_MODES else None
     if safe_mode:
         _apply_risk_mode(evaluator, RISK_MODES[safe_mode])
     result = evaluator.evaluate(yahoo_ticker, name, df)
     metrics = _compute_technical_metrics(df)
-    fundamentals = fetch_fundamentals(yahoo_ticker)
+    fundamentals = fetch_fundamentals(yahoo_ticker, info=ticker_info)
 
     display_code = ticker_code.removesuffix(".T")
     close_fallback = _last_valid_close(df)
@@ -774,7 +788,7 @@ def _diagnose_ticker(raw_code: str, mode: Optional[str] = None) -> Dict[str, Any
         result.get("current_price") or result.get("close_price"),
         close_fallback,
     )
-    return {
+    response = {
         "status":              "success",
         "code":                display_code,
         "ticker":              display_code,
@@ -795,7 +809,10 @@ def _diagnose_ticker(raw_code: str, mode: Optional[str] = None) -> Dict[str, Any
         "fundamentals":        fundamentals,
         "fundamental_grade":   (fundamentals.get("assessment") or {}).get("grade"),
         "fundamental_score":   (fundamentals.get("assessment") or {}).get("score"),
+        "cached":              False,
     }
+    put_diagnosis(ticker_code, safe_mode, response)
+    return response
 
 
 def _apply_risk_mode(evaluator: StrategyEvaluator, mode_config: Dict[str, float]) -> None:
@@ -881,6 +898,24 @@ async def _execute_bulk_screener(selected_mode: str) -> Dict[str, Any]:
     }
 
 
+async def _diagnose_ticker_with_timeout(raw_code: str, mode: Optional[str] = None) -> Dict[str, Any]:
+    """30秒以内に完了するようタイムアウト付きで診断する。"""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_diagnose_ticker, raw_code, mode),
+            timeout=DIAGNOSIS_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError as exc:
+        logger.error("銘柄診断タイムアウト: code=%s mode=%s", raw_code, mode)
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"銘柄 {raw_code} の診断が {int(DIAGNOSIS_TIMEOUT_SEC)} 秒以内に完了しませんでした。"
+                "しばらく待ってから再試行してください。"
+            ),
+        ) from exc
+
+
 @app.post("/api/v1/screen")
 async def execute_screener(payload: ScreenPayload):
     """
@@ -896,7 +931,7 @@ async def execute_screener(payload: ScreenPayload):
             payload.model_dump(exclude_none=True),
         )
         try:
-            return await asyncio.to_thread(_diagnose_ticker, resolved, payload.mode)
+            return await _diagnose_ticker_with_timeout(resolved, payload.mode)
         except HTTPException:
             raise
         except Exception as e:
@@ -909,20 +944,26 @@ async def execute_screener(payload: ScreenPayload):
             normalized = normalize_stock_codes_param(code)
             if normalized and "," in normalized:
                 logger.info(f"/api/v1/screen 複数銘柄実診断: codes={normalized}")
-                stocks = []
-                for single_code in normalized.split(","):
-                    try:
-                        stocks.append(
-                            await asyncio.to_thread(_diagnose_ticker, single_code, payload.mode)
-                        )
-                    except HTTPException:
-                        raise
-                    except Exception as e:
-                        logger.error(f"/api/v1/screen 銘柄 {single_code} エラー: {e}")
+                codes = normalized.split(",")
+                try:
+                    stocks = await asyncio.gather(
+                        *[
+                            _diagnose_ticker_with_timeout(single_code, payload.mode)
+                            for single_code in codes
+                        ]
+                    )
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    logger.error(f"/api/v1/screen 複数銘柄エラー: {e}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"銘柄診断中にエラーが発生しました: {e}",
+                    ) from e
                 return {
                     "status": "success",
                     "count":  len(stocks),
-                    "stocks": stocks,
+                    "stocks": list(stocks),
                 }
 
     selected_mode = payload.mode or "堅実"
@@ -1232,6 +1273,9 @@ def health_check():
         "scheduler_reason": _scheduler_disable_reason(),
         "next_scan_time":  get_next_run_time() if _scheduler_enabled() else None,
         "db_path":         str(storage.DB_PATH.resolve()),
+        "diagnosis_cache_ttl_sec": DEFAULT_TTL_SEC,
+        "diagnosis_history_days": DEFAULT_HISTORY_DAYS,
+        "diagnosis_timeout_sec": DIAGNOSIS_TIMEOUT_SEC,
     }
 
 

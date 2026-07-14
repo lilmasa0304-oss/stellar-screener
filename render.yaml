@@ -47,3 +47,11 @@ services:
         value: https://api.dify.ai/v1
       - key: DIFY_USER
         value: render_user
+
+      # 銘柄診断の高速化（TTL キャッシュ・短い履歴取得）
+      - key: DIAGNOSIS_CACHE_TTL_SEC
+        value: "300"
+      - key: DIAGNOSIS_HISTORY_DAYS
+        value: "120"
+      - key: DIAGNOSIS_TIMEOUT_SEC
+        value: "28"

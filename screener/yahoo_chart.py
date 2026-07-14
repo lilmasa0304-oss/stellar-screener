@@ -18,10 +18,13 @@ _YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 _PERIOD_MAP = {
     "1mo": "1mo",
     "3mo": "3mo",
+    "4mo": "4mo",
     "6mo": "6mo",
     "1y": "1y",
     "2y": "2y",
     "5y": "5y",
+    "90d": "90d",
+    "120d": "120d",
 }
 
 
@@ -34,7 +37,7 @@ def _to_stooq_symbol(ticker_symbol: str) -> Optional[str]:
     return None
 
 
-@retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=6))
+@retry(reraise=True, stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=4))
 def _fetch_yahoo_chart_json(symbol: str, period: str) -> Dict[str, Any]:
     session = get_yahoo_session()
     response = session.get(
@@ -128,7 +131,15 @@ def fetch_history_with_fallback(
         try:
             df = _fetch_stooq_csv(stooq_symbol)
             if df is not None and not df.empty:
-                tail = {"1mo": 22, "3mo": 66, "6mo": 132, "1y": 264}.get(period, 132)
+                tail = {
+                    "1mo": 22,
+                    "3mo": 66,
+                    "4mo": 88,
+                    "6mo": 132,
+                    "1y": 264,
+                    "90d": 90,
+                    "120d": 90,
+                }.get(period, 90)
                 df = df.tail(tail)
                 logger.info("Stooq 取得成功: %s (%d rows)", stooq_symbol, len(df))
                 return df, symbol, "stooq"

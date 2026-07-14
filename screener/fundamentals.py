@@ -50,18 +50,24 @@ def _format_ratio(value: Optional[float], suffix: str = "倍", decimals: int = 2
     return f"{value:.{decimals}f}{suffix}"
 
 
-def fetch_fundamentals(yahoo_ticker: str) -> Dict[str, Any]:
+def fetch_fundamentals(
+    yahoo_ticker: str,
+    info: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """銘柄のファンダメンタルズ指標を取得する（診断専用・単銘柄向け）。"""
     result: Dict[str, Any] = {
         "available": False,
         "ticker": yahoo_ticker,
     }
-    try:
-        info = create_yfinance_ticker(yahoo_ticker).info or {}
-    except Exception as exc:
-        logger.warning("ファンダメンタルズ取得失敗 (%s): %s", yahoo_ticker, exc)
-        result["error"] = str(exc)
-        return result
+    if info is None:
+        try:
+            info = create_yfinance_ticker(yahoo_ticker).info or {}
+        except Exception as exc:
+            logger.warning("ファンダメンタルズ取得失敗 (%s): %s", yahoo_ticker, exc)
+            result["error"] = str(exc)
+            return result
+    else:
+        info = info or {}
 
     if not info:
         result["error"] = "データなし"
