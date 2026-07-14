@@ -59,15 +59,13 @@ def fetch_fundamentals(
         "available": False,
         "ticker": yahoo_ticker,
     }
-    if info is None:
+    if info is None or not info:
         try:
             info = create_yfinance_ticker(yahoo_ticker).info or {}
         except Exception as exc:
             logger.warning("ファンダメンタルズ取得失敗 (%s): %s", yahoo_ticker, exc)
             result["error"] = str(exc)
             return result
-    else:
-        info = info or {}
 
     if not info:
         result["error"] = "データなし"
