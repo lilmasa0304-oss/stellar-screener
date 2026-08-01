@@ -330,7 +330,7 @@
                 </div>
                 <div class="flex-1 min-w-0">
                     <h2 class="section-title text-emerald-400">③ JPX400 テクニカルスキャン</h2>
-                    <p class="section-desc">主要400銘柄のチャートをリアルタイムでスキャンし、BUY SIGNALをその場で検出します。</p>
+                    <p class="section-desc">主要400銘柄のチャートをリアルタイムでスキャンし、BUY SIGNALをその場で検出します。決算発表の前後1週間に該当する銘柄は、決算跨ぎリスク回避のため自動的に除外します。</p>
                 </div>
             </div>
 
@@ -517,6 +517,10 @@
                 reason: hit.reason ?? null,
                 preset_matched: hit.preset_matched ?? null,
                 sector: hit.sector ?? null,
+                earnings_blackout: hit.earnings_blackout ?? null,
+                earnings_warning: hit.earnings_warning ?? null,
+                earnings_filter_message: hit.earnings_filter_message ?? null,
+                entry_eligible: hit.entry_eligible ?? null,
             };
         }
 
@@ -740,7 +744,11 @@
 
             if (data.status === 'completed') {
                 const elapsed = data.elapsed_seconds != null ? ` / ${data.elapsed_seconds}秒` : '';
-                label.textContent = `BUY SIGNAL ${data.buy_count || 0} 件（${data.mode || selectedRiskMode}${elapsed}）`;
+                let progressText = `BUY SIGNAL ${data.buy_count || 0} 件（${data.mode || selectedRiskMode}${elapsed}）`;
+                if ((data.earnings_filtered_count || 0) > 0) {
+                    progressText += ` / 決算前後除外 ${data.earnings_filtered_count} 件`;
+                }
+                label.textContent = progressText;
                 return;
             }
 
@@ -959,7 +967,11 @@
                 const answer = data.answer || '（応答が空でした）';
                 await typeOutMessage(stellarEl, answer);
                 const modelLabel = data.model ? ` (${data.model})` : '';
-                scanStatus.textContent = `統合AI診断${modelLabel} が完了しました。`;
+                if (data.earnings_blackout && data.earnings_filter_message) {
+                    scanStatus.textContent = `統合AI診断${modelLabel} が完了しました。（${data.earnings_filter_message}）`;
+                } else {
+                    scanStatus.textContent = `統合AI診断${modelLabel} が完了しました。`;
+                }
             } catch (error) {
                 stellarEl.classList.remove('typing-cursor');
                 stellarEl.textContent = `エラー: ${error.message}`;

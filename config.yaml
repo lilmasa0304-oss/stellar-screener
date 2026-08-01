@@ -404,6 +404,10 @@ tickers:
 settings:
   delay_seconds: 0.5
   history_period: 6mo
+  earnings_filter:
+    enabled: true
+    days_before: 7
+    days_after: 7
 strategies:
   rsi:
     enabled: true
