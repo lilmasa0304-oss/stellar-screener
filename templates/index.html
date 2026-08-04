@@ -414,7 +414,7 @@
                     </div>
                     <p class="section-desc">
                         スキャンした銘柄コードを入力すると、チャート分析に加え、業績や財務（ファンダメンタルズ）も含めてAIが総合的に診断します。
-                        <span id="ai-mode-label" class="text-cyan-500/80">接続確認中</span>
+                        <span id="ai-mode-label" class="hidden text-amber-400/90"></span>
                     </p>
                 </div>
             </div>
@@ -722,7 +722,7 @@
             document.getElementById('scan-results-wrap').classList.add('hidden');
             document.getElementById('scan-loading-title').textContent = `【${mode}】JPX400 をスキャン中...`;
             document.getElementById('scan-loading-desc').textContent =
-                '約400銘柄を並列処理しています。完了までこの画面から移動しません。';
+                '約400銘柄を並列処理しています。完了までこの画面を離れずにお待ちください。';
         }
 
         function showScanResults() {
@@ -1029,15 +1029,24 @@
                 if (status.configured) {
                     badge.textContent = 'Dify 接続可';
                     badge.className = 'text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded font-bold mono-font';
-                    if (modeLabel) modeLabel.textContent = `API: ${status.api_url || 'Dify Workflow'}`;
+                    if (modeLabel) {
+                        modeLabel.textContent = '';
+                        modeLabel.classList.add('hidden');
+                    }
                 } else {
                     badge.textContent = 'APIキー未設定';
                     badge.className = 'text-xs bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded font-bold mono-font';
-                    if (modeLabel) modeLabel.textContent = 'DIFY_API_KEY を設定してください';
+                    if (modeLabel) {
+                        modeLabel.textContent = 'DIFY_API_KEY を設定してください';
+                        modeLabel.classList.remove('hidden');
+                    }
                 }
             } catch (_) {
                 badge.textContent = '接続不明';
-                if (modeLabel) modeLabel.textContent = '—';
+                if (modeLabel) {
+                    modeLabel.textContent = '';
+                    modeLabel.classList.add('hidden');
+                }
             }
         }
 
