@@ -30,6 +30,13 @@ _DIFY_INPUT_FIELDS = (
     "sector",
     "fundamental_grade",
     "fundamental_score",
+    "earnings_blackout",
+    "earnings_warning",
+    "earnings_filter_message",
+    "earnings_reference_date",
+    "next_earnings_date",
+    "last_earnings_date",
+    "entry_eligible",
     "preset_evaluations",
     "fundamentals",
 )

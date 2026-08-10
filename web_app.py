@@ -28,7 +28,12 @@ from screener.diagnosis_cache import (
     put_diagnosis,
 )
 from screener.fundamentals import fetch_fundamentals
-from screener.dify_http_compat import resolve_dify_stock_code
+from screener.earnings import (
+    apply_earnings_fields,
+    check_earnings_blackout,
+    get_earnings_filter_settings,
+    should_fail_closed_for_mode,
+)
 from screener.dify_workflow import (
     call_dify_workflow_for_codes,
     get_dify_api_key,
@@ -517,6 +522,26 @@ def _decorate_buy_signal_rows(results: List[Dict[str, Any]]) -> List[Dict[str, A
     return decorated
 
 
+def _build_scan_completion_message(
+    mode: str,
+    buy_count: int,
+    total: int,
+    elapsed: float,
+    earnings_filtered_count: int,
+    earnings_filter_enabled: bool,
+) -> str:
+    base = (
+        f"【{mode}】JPX400 スキャン完了: "
+        f"BUY SIGNAL {buy_count} 件 / {total} 銘柄（{elapsed}秒）"
+    )
+    if earnings_filter_enabled and earnings_filtered_count > 0:
+        base += (
+            f" ※決算発表前後（1週間以内）のため "
+            f"{earnings_filtered_count} 件をエントリー対象外として除外"
+        )
+    return base
+
+
 async def _execute_jpx400_realtime_scan(selected_mode: str = "堅実") -> Dict[str, Any]:
     """
     JPX400（約400銘柄）を非同期並列スクリーニングし、結果を即時返却する。
@@ -538,6 +563,8 @@ async def _execute_jpx400_realtime_scan(selected_mode: str = "堅実") -> Dict[s
     )
 
     global _jpx400_progress
+    config = read_config_yaml()
+    earnings_cfg = get_earnings_filter_settings(config)
     _jpx400_progress.update({
         "status":          "running",
         "scan_id":         scan_id,
@@ -557,19 +584,29 @@ async def _execute_jpx400_realtime_scan(selected_mode: str = "堅実") -> Dict[s
     )
 
     started = time.monotonic()
-    config = read_config_yaml()
     fetcher = DataFetcher(delay_seconds=0, history_period="6mo")
     evaluator = StrategyEvaluator(config)
 
     tasks = [
-        _fetch_and_evaluate_single_stock(ticker, mode_config, evaluator, fetcher)
+        _fetch_and_evaluate_single_stock(
+            ticker,
+            mode_config,
+            evaluator,
+            fetcher,
+            earnings_cfg,
+            safe_mode,
+        )
         for ticker in tickers
     ]
     results = await asyncio.gather(*tasks)
 
     buy_signals: List[Dict[str, Any]] = []
+    earnings_filtered_count = 0
     for stock in results:
         if stock is None:
+            continue
+        if stock.get("_earnings_filtered"):
+            earnings_filtered_count += 1
             continue
         ev = dict(stock["metrics"])
         ev["ticker"] = stock["ticker"]
@@ -600,10 +637,16 @@ async def _execute_jpx400_realtime_scan(selected_mode: str = "堅実") -> Dict[s
         "processed":       total,
         "buy_count":       len(buy_signals),
         "buy_signals":     decorated,
+        "earnings_filtered_count": earnings_filtered_count,
+        "earnings_filter_enabled": earnings_cfg.get("enabled", True),
         "elapsed_seconds": elapsed,
-        "message":         (
-            f"【{safe_mode}】JPX400 スキャン完了: "
-            f"BUY SIGNAL {len(buy_signals)} 件 / {total} 銘柄（{elapsed}秒）"
+        "message":         _build_scan_completion_message(
+            safe_mode,
+            len(buy_signals),
+            total,
+            elapsed,
+            earnings_filtered_count,
+            earnings_cfg.get("enabled", True),
         ),
     }
     _jpx400_progress.update(payload)
@@ -811,6 +854,18 @@ def _diagnose_ticker(raw_code: str, mode: Optional[str] = None) -> Dict[str, Any
         "fundamental_score":   (fundamentals.get("assessment") or {}).get("score"),
         "cached":              False,
     }
+
+    earnings_cfg = get_earnings_filter_settings(config)
+    if earnings_cfg.get("enabled", True):
+        blackout = check_earnings_blackout(
+            yahoo_ticker,
+            info=ticker_info,
+            days_before=earnings_cfg.get("days_before", 7),
+            days_after=earnings_cfg.get("days_after", 7),
+            fail_closed=should_fail_closed_for_mode(safe_mode, config),
+        )
+        response = apply_earnings_fields(response, blackout)
+
     put_diagnosis(ticker_code, safe_mode, response)
     return response
 
@@ -839,6 +894,8 @@ async def _fetch_and_evaluate_single_stock(
     mode_config: Dict[str, float],
     evaluator: StrategyEvaluator,
     fetcher: DataFetcher,
+    earnings_cfg: Optional[Dict[str, Any]] = None,
+    risk_mode: str = "堅実",
 ) -> Optional[Dict[str, Any]]:
     """1銘柄を非同期ワーカーで取得・評価する。"""
     async with _scan_semaphore:
@@ -853,6 +910,25 @@ async def _fetch_and_evaluate_single_stock(
 
             if not metrics.get("buy_signal"):
                 return None
+
+            cfg = earnings_cfg or get_earnings_filter_settings(read_config_yaml())
+            if cfg.get("enabled", True):
+                blackout = await asyncio.to_thread(
+                    check_earnings_blackout,
+                    ticker,
+                    days_before=cfg.get("days_before", 7),
+                    days_after=cfg.get("days_after", 7),
+                    fail_closed=should_fail_closed_for_mode(risk_mode, evaluator.config),
+                )
+                if blackout.is_blackout:
+                    logger.info(
+                        "決算フィルター除外: %s (%s) mode=%s fail_closed=%s",
+                        ticker,
+                        blackout.reference_date,
+                        risk_mode,
+                        blackout.fail_closed and not blackout.data_available,
+                    )
+                    return {"_earnings_filtered": True, "ticker": ticker}
 
             return {
                 "ticker": ticker,
@@ -1214,7 +1290,27 @@ async def stellar_chat(payload: ChatPayload):
         ",".join(codes),
         ",".join(to_dify_input_value(code) for code in codes),
     )
-    return await _run_dify_diagnosis(query, codes)
+    result = await _run_dify_diagnosis(query, codes)
+
+    if len(codes) == 1:
+        try:
+            diagnosis = await asyncio.to_thread(
+                _diagnose_ticker,
+                codes[0],
+                payload.mode if payload.mode in RISK_MODES else None,
+            )
+            if diagnosis.get("earnings_blackout"):
+                warning = diagnosis.get("earnings_filter_message") or diagnosis.get("earnings_warning")
+                if warning:
+                    answer = result.get("answer") or ""
+                    if warning not in answer:
+                        result["answer"] = f"{warning}\n\n{answer}".strip()
+                    result["earnings_blackout"] = True
+                    result["earnings_filter_message"] = diagnosis.get("earnings_filter_message")
+        except Exception as exc:
+            logger.debug("決算警告付与スキップ: %s", exc)
+
+    return result
 
 
 @app.post("/api/dify/chat")
