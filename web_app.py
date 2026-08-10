@@ -34,6 +34,7 @@ from screener.earnings import (
     get_earnings_filter_settings,
     should_fail_closed_for_mode,
 )
+from screener.dify_http_compat import resolve_dify_stock_code
 from screener.dify_workflow import (
     call_dify_workflow_for_codes,
     get_dify_api_key,
