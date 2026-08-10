@@ -408,6 +408,8 @@ settings:
     enabled: true
     days_before: 7
     days_after: 7
+    fail_closed_modes:
+      - 堅実
 strategies:
   rsi:
     enabled: true

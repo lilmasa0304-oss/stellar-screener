@@ -32,6 +32,7 @@ from screener.earnings import (
     apply_earnings_fields,
     check_earnings_blackout,
     get_earnings_filter_settings,
+    should_fail_closed_for_mode,
 )
 from screener.dify_workflow import (
     call_dify_workflow_for_codes,
@@ -593,6 +594,7 @@ async def _execute_jpx400_realtime_scan(selected_mode: str = "堅実") -> Dict[s
             evaluator,
             fetcher,
             earnings_cfg,
+            safe_mode,
         )
         for ticker in tickers
     ]
@@ -860,6 +862,7 @@ def _diagnose_ticker(raw_code: str, mode: Optional[str] = None) -> Dict[str, Any
             info=ticker_info,
             days_before=earnings_cfg.get("days_before", 7),
             days_after=earnings_cfg.get("days_after", 7),
+            fail_closed=should_fail_closed_for_mode(safe_mode, config),
         )
         response = apply_earnings_fields(response, blackout)
 
@@ -892,6 +895,7 @@ async def _fetch_and_evaluate_single_stock(
     evaluator: StrategyEvaluator,
     fetcher: DataFetcher,
     earnings_cfg: Optional[Dict[str, Any]] = None,
+    risk_mode: str = "堅実",
 ) -> Optional[Dict[str, Any]]:
     """1銘柄を非同期ワーカーで取得・評価する。"""
     async with _scan_semaphore:
@@ -914,12 +918,15 @@ async def _fetch_and_evaluate_single_stock(
                     ticker,
                     days_before=cfg.get("days_before", 7),
                     days_after=cfg.get("days_after", 7),
+                    fail_closed=should_fail_closed_for_mode(risk_mode, evaluator.config),
                 )
                 if blackout.is_blackout:
                     logger.info(
-                        "決算フィルター除外: %s (%s)",
+                        "決算フィルター除外: %s (%s) mode=%s fail_closed=%s",
                         ticker,
                         blackout.reference_date,
+                        risk_mode,
+                        blackout.fail_closed and not blackout.data_available,
                     )
                     return {"_earnings_filtered": True, "ticker": ticker}
 

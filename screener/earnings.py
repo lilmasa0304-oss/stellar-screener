@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -14,13 +15,16 @@ from screener.yahoo_session import create_yfinance_ticker
 
 logger = logging.getLogger(__name__)
 
+JST = timezone(timedelta(hours=9))
 DEFAULT_DAYS_BEFORE = int(os.environ.get("EARNINGS_DAYS_BEFORE", "7"))
 DEFAULT_DAYS_AFTER = int(os.environ.get("EARNINGS_DAYS_AFTER", "7"))
 EARNINGS_CACHE_TTL_SEC = float(os.environ.get("EARNINGS_CACHE_TTL_SEC", "3600"))
+DEFAULT_FAIL_CLOSED_MODES = ("堅実",)
 
 
 @dataclass(frozen=True)
 class EarningsSchedule:
+    all_dates: Tuple[date, ...] = ()
     next_earnings_date: Optional[date] = None
     last_earnings_date: Optional[date] = None
     source: str = "unknown"
@@ -35,13 +39,23 @@ class EarningsBlackoutResult:
     days_before: int = DEFAULT_DAYS_BEFORE
     days_after: int = DEFAULT_DAYS_AFTER
     data_available: bool = True
+    fail_closed: bool = False
 
     def warning_tag(self) -> str:
-        if not self.is_blackout or self.reference_date is None:
+        if not self.is_blackout:
             return ""
-        return f"⚠️ 決算通過直前/直後（決算日: {self.reference_date.strftime('%Y/%m/%d')}）"
+        if self.reference_date is not None:
+            return f"⚠️ 決算通過直前/直後（決算日: {self.reference_date.strftime('%Y/%m/%d')}）"
+        if not self.data_available and self.fail_closed:
+            return "⚠️ 決算日データ未取得（安全側でエントリー除外）"
+        return "⚠️ 決算跨ぎリスク"
 
     def filter_message(self) -> str:
+        if not self.data_available and self.fail_closed:
+            return (
+                "決算発表日を取得できなかったため、"
+                "【堅実モード】では安全側に倒してエントリー対象外としました。"
+            )
         base = (
             f"決算発表前後（{self.days_before}日以内）のため、"
             "エントリー対象外としてフィルタリングしました。"
@@ -74,8 +88,33 @@ class _EarningsCache:
         with self._lock:
             self._store[key] = (value, time.monotonic() + self._ttl)
 
+    def clear(self) -> None:
+        with self._lock:
+            self._store.clear()
+
 
 _earnings_cache = _EarningsCache(EARNINGS_CACHE_TTL_SEC)
+
+
+def normalize_yahoo_ticker(symbol: str) -> str:
+    """日本株コードを Yahoo Finance 形式（例: 7906.T）へ正規化する。"""
+    raw = (symbol or "").strip().upper()
+    if not raw:
+        return raw
+    if raw.endswith(".T"):
+        return raw
+    if re.fullmatch(r"\d{3}[A-Z0-9]", raw):
+        return f"{raw}.T"
+    if raw.isdigit():
+        return f"{raw}.T"
+    return raw
+
+
+def today_jst(reference_date: Optional[date] = None) -> date:
+    """判定基準日（JST の本日）を返す。"""
+    if reference_date is not None:
+        return reference_date
+    return datetime.now(JST).date()
 
 
 def get_earnings_filter_settings(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -87,11 +126,20 @@ def get_earnings_filter_settings(config: Optional[Dict[str, Any]] = None) -> Dic
         enabled = enabled_raw.strip().lower() not in {"0", "false", "no", "off"}
     else:
         enabled = bool(enabled_raw)
+    fail_closed_modes = earnings_cfg.get("fail_closed_modes") or list(DEFAULT_FAIL_CLOSED_MODES)
     return {
         "enabled": enabled,
         "days_before": int(earnings_cfg.get("days_before", DEFAULT_DAYS_BEFORE)),
         "days_after": int(earnings_cfg.get("days_after", DEFAULT_DAYS_AFTER)),
+        "fail_closed_modes": [str(mode) for mode in fail_closed_modes],
     }
+
+
+def should_fail_closed_for_mode(risk_mode: Optional[str], config: Optional[Dict[str, Any]] = None) -> bool:
+    """決算日未取得時に安全側（除外）へ倒すモードか。"""
+    cfg = get_earnings_filter_settings(config)
+    mode = (risk_mode or "").strip()
+    return mode in cfg.get("fail_closed_modes", [])
 
 
 def _to_date(value: Any) -> Optional[date]:
@@ -100,27 +148,52 @@ def _to_date(value: Any) -> Optional[date]:
     if isinstance(value, date) and not isinstance(value, datetime):
         return value
     if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(JST).date()
         return value.date()
+    if hasattr(value, "to_pydatetime"):
+        try:
+            return _to_date(value.to_pydatetime())
+        except Exception:
+            pass
+    if hasattr(value, "date") and callable(value.date):
+        try:
+            parsed = value.date()
+            if isinstance(parsed, datetime):
+                return parsed.date()
+            if isinstance(parsed, date):
+                return parsed
+        except Exception:
+            pass
     if isinstance(value, (list, tuple)):
+        dates: List[date] = []
         for item in value:
             parsed = _to_date(item)
             if parsed is not None:
-                return parsed
-        return None
+                dates.append(parsed)
+        return dates[0] if dates else None
     try:
         numeric = float(value)
     except (TypeError, ValueError):
         text = str(value).strip()
         if not text:
             return None
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(text[:19], fmt).date()
+            except ValueError:
+                continue
         try:
-            return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+            parsed_dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed_dt.tzinfo is not None:
+                return parsed_dt.astimezone(JST).date()
+            return parsed_dt.date()
         except ValueError:
             return None
     if numeric > 1e12:
         numeric /= 1000.0
     try:
-        return datetime.fromtimestamp(numeric, tz=timezone.utc).date()
+        return datetime.fromtimestamp(numeric, tz=JST).date()
     except (OverflowError, OSError, ValueError):
         return None
 
@@ -192,12 +265,6 @@ def _split_next_and_last(dates: List[date], today: date) -> Tuple[Optional[date]
     future = [d for d in dates if d > today]
     last_date = max(past) if past else None
     next_date = min(future) if future else None
-    if next_date is None and last_date is None:
-        only = dates[-1]
-        if only >= today:
-            next_date = only
-        else:
-            last_date = only
     return next_date, last_date
 
 
@@ -206,7 +273,7 @@ def fetch_earnings_schedule(
     info: Optional[Dict[str, Any]] = None,
 ) -> EarningsSchedule:
     """次回・直近の決算発表日を yfinance から取得する。"""
-    symbol = yahoo_ticker.strip().upper()
+    symbol = normalize_yahoo_ticker(yahoo_ticker)
     cached = _earnings_cache.get(symbol)
     if cached is not None:
         return cached
@@ -222,31 +289,40 @@ def fetch_earnings_schedule(
 
     try:
         ticker = create_yfinance_ticker(symbol)
-        if not dates:
-            calendar_dates = _dates_from_calendar(getattr(ticker, "calendar", None))
-            if calendar_dates:
-                dates.extend(calendar_dates)
-                source = "calendar"
-        if not dates:
-            earnings_dates = _dates_from_earnings_dates_table(
-                getattr(ticker, "earnings_dates", None)
-            )
-            if earnings_dates:
-                dates.extend(earnings_dates)
+        calendar_obj = getattr(ticker, "calendar", None)
+        if callable(calendar_obj):
+            try:
+                calendar_obj = calendar_obj()
+            except Exception:
+                calendar_obj = None
+        calendar_dates = _dates_from_calendar(calendar_obj)
+        if calendar_dates:
+            dates.extend(calendar_dates)
+            source = "calendar"
+
+        earnings_dates = _dates_from_earnings_dates_table(
+            getattr(ticker, "earnings_dates", None)
+        )
+        if earnings_dates:
+            dates.extend(earnings_dates)
+            if source == "unknown":
                 source = "earnings_dates"
-        if not info and not dates:
+
+        if not info:
             info = ticker.info or {}
-            info_dates = _dates_from_info(info)
-            if info_dates:
-                dates.extend(info_dates)
+        info_dates = _dates_from_info(info)
+        if info_dates:
+            dates.extend(info_dates)
+            if source == "unknown":
                 source = "info_fetch"
     except Exception as exc:
-        logger.debug("決算日取得失敗 (%s): %s", symbol, exc)
+        logger.warning("決算日取得失敗 (%s): %s", symbol, exc)
 
     unique = _unique_dates(dates)
-    today = datetime.now(timezone.utc).date()
+    today = today_jst()
     next_date, last_date = _split_next_and_last(unique, today)
     schedule = EarningsSchedule(
+        all_dates=tuple(unique),
         next_earnings_date=next_date,
         last_earnings_date=last_date,
         source=source,
@@ -263,7 +339,7 @@ def is_within_earnings_blackout(
     days_before: int = DEFAULT_DAYS_BEFORE,
     days_after: int = DEFAULT_DAYS_AFTER,
 ) -> bool:
-    today = reference_date or datetime.now(timezone.utc).date()
+    today = today_jst(reference_date)
     start = earnings_date - timedelta(days=days_before)
     end = earnings_date + timedelta(days=days_after)
     return start <= today <= end
@@ -276,24 +352,31 @@ def check_earnings_blackout(
     reference_date: Optional[date] = None,
     days_before: int = DEFAULT_DAYS_BEFORE,
     days_after: int = DEFAULT_DAYS_AFTER,
+    fail_closed: bool = False,
 ) -> EarningsBlackoutResult:
-    """決算日前後ブラックアウト期間か判定する。データ未取得時は除外しない。"""
-    schedule = fetch_earnings_schedule(yahoo_ticker, info=info)
-    candidates = [
-        d for d in (schedule.next_earnings_date, schedule.last_earnings_date) if d is not None
-    ]
-    if not candidates:
+    """決算日前後ブラックアウト期間か判定する。"""
+    symbol = normalize_yahoo_ticker(yahoo_ticker)
+    schedule = fetch_earnings_schedule(symbol, info=info)
+    today = today_jst(reference_date)
+
+    if not schedule.all_dates:
+        if fail_closed:
+            return EarningsBlackoutResult(
+                is_blackout=True,
+                days_before=days_before,
+                days_after=days_after,
+                data_available=False,
+                fail_closed=True,
+            )
         return EarningsBlackoutResult(
             is_blackout=False,
-            next_earnings_date=schedule.next_earnings_date,
-            last_earnings_date=schedule.last_earnings_date,
             days_before=days_before,
             days_after=days_after,
             data_available=False,
+            fail_closed=False,
         )
 
-    today = reference_date or datetime.now(timezone.utc).date()
-    for earnings_date in candidates:
+    for earnings_date in schedule.all_dates:
         if is_within_earnings_blackout(
             earnings_date,
             reference_date=today,
@@ -308,6 +391,7 @@ def check_earnings_blackout(
                 days_before=days_before,
                 days_after=days_after,
                 data_available=True,
+                fail_closed=fail_closed,
             )
 
     return EarningsBlackoutResult(
@@ -317,6 +401,7 @@ def check_earnings_blackout(
         days_before=days_before,
         days_after=days_after,
         data_available=True,
+        fail_closed=fail_closed,
     )
 
 
