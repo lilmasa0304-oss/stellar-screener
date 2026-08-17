@@ -117,7 +117,46 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_sto_horizon
                 ON signal_track_outcomes(horizon_days);
         """)
+        _migrate_signal_tracks(conn)
     logger.info(f"DB initialized at {DB_PATH.resolve()}")
+
+
+def _migrate_signal_tracks(conn: sqlite3.Connection) -> None:
+    """既存 DB へ signal_tracks のライブ snapshot 列を追加する。"""
+    columns = (
+        ("current_price", "REAL"),
+        ("current_return_pct", "REAL"),
+        ("period_high", "REAL"),
+        ("period_low", "REAL"),
+        ("max_return_pct", "REAL"),
+        ("min_return_pct", "REAL"),
+        ("business_days_elapsed", "INTEGER"),
+        ("final_return_pct", "REAL"),
+        ("final_is_win", "INTEGER"),
+        ("archived_at", "TEXT"),
+        ("last_updated_at", "TEXT"),
+    )
+    for name, col_type in columns:
+        try:
+            conn.execute(f"ALTER TABLE signal_tracks ADD COLUMN {name} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+    try:
+        conn.execute(
+            "ALTER TABLE signal_track_outcomes ADD COLUMN min_return_pct REAL"
+        )
+    except sqlite3.OperationalError:
+        pass
+    conn.execute(
+        "UPDATE signal_tracks SET status='archived' WHERE status='completed'"
+    )
+    for horizon, label in ((5, "5日目（1週間）"), (10, "10日目（2週間）")):
+        conn.execute(
+            """INSERT OR IGNORE INTO signal_track_outcomes
+               (track_id, horizon_days, horizon_label, status)
+               SELECT track_id, ?, ?, 'pending' FROM signal_tracks""",
+            (horizon, label),
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -353,11 +392,111 @@ def list_active_signal_tracks(limit: int = 100) -> List[Dict[str, Any]]:
 
 
 def mark_track_completed(track_id: int) -> None:
+    """後方互換: 追跡完了。"""
+    mark_track_archived(track_id)
+
+
+def mark_track_archived(
+    track_id: int,
+    *,
+    final_return_pct: Optional[float] = None,
+    final_is_win: Optional[bool] = None,
+    max_return_pct: Optional[float] = None,
+    min_return_pct: Optional[float] = None,
+) -> None:
+    now = datetime.utcnow().isoformat()
     with _get_conn() as conn:
         conn.execute(
-            "UPDATE signal_tracks SET status='completed' WHERE track_id=?",
-            (track_id,),
+            """UPDATE signal_tracks
+               SET status='archived',
+                   archived_at=?,
+                   final_return_pct=COALESCE(?, final_return_pct),
+                   final_is_win=COALESCE(?, final_is_win),
+                   max_return_pct=COALESCE(?, max_return_pct),
+                   min_return_pct=COALESCE(?, min_return_pct),
+                   last_updated_at=?
+               WHERE track_id=?""",
+            (
+                now,
+                final_return_pct,
+                int(final_is_win) if final_is_win is not None else None,
+                max_return_pct,
+                min_return_pct,
+                now,
+                track_id,
+            ),
         )
+
+
+def update_track_snapshot(
+    track_id: int,
+    *,
+    current_price: Optional[float] = None,
+    current_return_pct: Optional[float] = None,
+    period_high: Optional[float] = None,
+    period_low: Optional[float] = None,
+    max_return_pct: Optional[float] = None,
+    min_return_pct: Optional[float] = None,
+    business_days_elapsed: Optional[int] = None,
+) -> None:
+    now = datetime.utcnow().isoformat()
+    with _get_conn() as conn:
+        conn.execute(
+            """UPDATE signal_tracks
+               SET current_price=?,
+                   current_return_pct=?,
+                   period_high=?,
+                   period_low=?,
+                   max_return_pct=?,
+                   min_return_pct=?,
+                   business_days_elapsed=?,
+                   last_updated_at=?
+               WHERE track_id=?""",
+            (
+                current_price,
+                current_return_pct,
+                period_high,
+                period_low,
+                max_return_pct,
+                min_return_pct,
+                business_days_elapsed,
+                now,
+                track_id,
+            ),
+        )
+
+
+def list_signal_tracks(
+    *,
+    status: Optional[str] = None,
+    risk_mode: Optional[str] = None,
+    limit: int = 200,
+) -> List[Dict[str, Any]]:
+    clauses: List[str] = []
+    params: List[Any] = []
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if risk_mode:
+        clauses.append("risk_mode = ?")
+        params.append(risk_mode)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+    with _get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT * FROM signal_tracks
+                {where}
+                ORDER BY registered_at DESC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+    results = []
+    for row in rows:
+        data = dict(row)
+        if data.get("final_is_win") is not None:
+            data["final_is_win"] = bool(data["final_is_win"])
+        results.append(data)
+    return results
 
 
 def get_track_outcome(track_id: int, horizon_days: int) -> Optional[Dict[str, Any]]:
@@ -384,6 +523,7 @@ def upsert_track_outcome(
     exit_price: Optional[float] = None,
     return_pct: Optional[float] = None,
     max_return_pct: Optional[float] = None,
+    min_return_pct: Optional[float] = None,
     is_win: Optional[bool] = None,
     status: str,
 ) -> None:
@@ -392,14 +532,15 @@ def upsert_track_outcome(
         conn.execute(
             """INSERT INTO signal_track_outcomes
                (track_id, horizon_days, horizon_label, eval_date, exit_price,
-                return_pct, max_return_pct, is_win, evaluated_at, status)
-               VALUES (?,?,?,?,?,?,?,?,?,?)
+                return_pct, max_return_pct, min_return_pct, is_win, evaluated_at, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(track_id, horizon_days) DO UPDATE SET
                  horizon_label=excluded.horizon_label,
                  eval_date=excluded.eval_date,
                  exit_price=excluded.exit_price,
                  return_pct=excluded.return_pct,
                  max_return_pct=excluded.max_return_pct,
+                 min_return_pct=excluded.min_return_pct,
                  is_win=excluded.is_win,
                  evaluated_at=excluded.evaluated_at,
                  status=excluded.status""",
@@ -411,6 +552,7 @@ def upsert_track_outcome(
                 exit_price,
                 return_pct,
                 max_return_pct,
+                min_return_pct,
                 int(is_win) if is_win is not None else None,
                 now if status == "complete" else None,
                 status,

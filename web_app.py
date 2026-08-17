@@ -53,8 +53,10 @@ from screener.jp_stock_code import (
 )
 from screener.jp_stock_names import resolve_jp_display_name
 from screener.signal_tracker import (
+    build_forward_test_dashboard,
     build_tracking_summary,
     evaluate_pending_tracks,
+    register_manual_track,
     register_track_from_scan,
 )
 from screener import storage
@@ -275,6 +277,15 @@ class WatchlistPayload(BaseModel):
 
 class MarketScanPayload(BaseModel):
     mode: Optional[str] = Field("堅実", description="リスクモード（堅実 / 標準 / 積極）")
+    auto_verify: bool = Field(True, description="検出銘柄を検証リストへ自動登録する")
+
+
+class TrackingRegisterPayload(BaseModel):
+    ticker: str = Field(..., description="銘柄コード（例: 7203 / 7203.T）")
+    name: Optional[str] = Field(None, description="銘柄名")
+    entry_price: float = Field(..., description="登録時株価（エントリー基準値）")
+    risk_mode: Optional[str] = Field("堅実", description="リスクモード")
+    preset_matched: Optional[str] = Field(None, description="検出プリセット")
 
 
 class ChatPayload(BaseModel):
@@ -547,7 +558,11 @@ def _build_scan_completion_message(
     return base
 
 
-async def _execute_jpx400_realtime_scan(selected_mode: str = "堅実") -> Dict[str, Any]:
+async def _execute_jpx400_realtime_scan(
+    selected_mode: str = "堅実",
+    *,
+    auto_verify: bool = True,
+) -> Dict[str, Any]:
     """
     JPX400（約400銘柄）を非同期並列スクリーニングし、結果を即時返却する。
     Vercel 上でボタン押下 → 同一リクエストで完結する想定。
@@ -622,12 +637,13 @@ async def _execute_jpx400_realtime_scan(selected_mode: str = "堅実") -> Dict[s
                 ev[k] = float(ev[k])
         result_id = storage.save_result(scan_id, ev)
         ev["buy_signal"] = True
-        register_track_from_scan(
-            scan_id,
-            ev,
-            risk_mode=safe_mode,
-            scan_result_id=result_id,
-        )
+        if auto_verify:
+            register_track_from_scan(
+                scan_id,
+                ev,
+                risk_mode=safe_mode,
+                scan_result_id=result_id,
+            )
         buy_signals.append(ev)
 
     elapsed = round(time.monotonic() - started, 2)
@@ -651,6 +667,7 @@ async def _execute_jpx400_realtime_scan(selected_mode: str = "堅実") -> Dict[s
         "buy_signals":     decorated,
         "earnings_filtered_count": earnings_filtered_count,
         "earnings_filter_enabled": earnings_cfg.get("enabled", True),
+        "auto_verify": auto_verify,
         "elapsed_seconds": elapsed,
         "message":         _build_scan_completion_message(
             safe_mode,
@@ -682,7 +699,10 @@ async def start_jpx400_scan(payload: MarketScanPayload):
     safe_mode = payload.mode if payload.mode in RISK_MODES else "堅実"
     try:
         async with _scan_lock:
-            return await _execute_jpx400_realtime_scan(safe_mode)
+            return await _execute_jpx400_realtime_scan(
+                safe_mode,
+                auto_verify=payload.auto_verify,
+            )
     except Exception as e:
         logger.exception(f"[JPX400 scan] 致命的エラー: {e}")
         _jpx400_progress.update({"status": "failed", "error": str(e)})
@@ -748,7 +768,42 @@ def get_scan_results(scan_id: str, buy_signal_only: bool = False):
         raise HTTPException(status_code=500, detail=f"結果の取得に失敗: {e}")
 
 
-# ── シグナル追跡 API ─────────────────────────────────────────────────────
+# ── パフォーマンス検証 API ─────────────────────────────────────────────────
+@app.get("/api/tracking/dashboard")
+def get_tracking_dashboard(auto_evaluate: bool = True):
+    """フォワードテスト追跡ダッシュボード（モード別比較・銘柄一覧）。"""
+    try:
+        return build_forward_test_dashboard(auto_evaluate=auto_evaluate)
+    except Exception as e:
+        logger.exception("検証ダッシュボード取得失敗: %s", e)
+        raise HTTPException(status_code=500, detail=f"検証ダッシュボードの取得に失敗: {e}") from e
+
+
+@app.post("/api/tracking/register")
+def register_tracking(payload: TrackingRegisterPayload):
+    """スキャン結果から手動で検証リストへ登録する。"""
+    safe_mode = payload.risk_mode if payload.risk_mode in RISK_MODES else "堅実"
+    ticker = normalize_jp_stock_code(payload.ticker) or payload.ticker.strip().upper()
+    if not ticker.endswith(".T"):
+        ticker = f"{ticker}.T"
+    try:
+        track_id = register_manual_track(
+            ticker=ticker,
+            name=payload.name,
+            entry_price=float(payload.entry_price),
+            risk_mode=safe_mode,
+            preset_matched=payload.preset_matched,
+        )
+        if track_id is None:
+            raise HTTPException(status_code=422, detail="検証リストへの登録に失敗しました。")
+        return {"status": "success", "track_id": track_id, "message": "検証リストに追加しました。"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("検証リスト登録失敗: %s", e)
+        raise HTTPException(status_code=500, detail=f"検証リスト登録に失敗: {e}") from e
+
+
 @app.get("/api/tracking/summary")
 def get_tracking_summary(
     risk_mode: Optional[str] = None,

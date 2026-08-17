@@ -1,17 +1,19 @@
-"""BUY SIGNAL 追跡（最大10営業日・3/5/10日目の成績集計）。"""
+"""BUY SIGNAL フォワードテスト追跡（最大10営業日・3/5/10日目の成績集計）。"""
 
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+import uuid
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
 from screener.jp_business_days import (
     add_jp_business_days,
-    is_jp_business_day,
+    business_days_between,
     next_jp_business_day,
+    parse_signal_date,
     today_jst,
 )
 from screener import storage
@@ -26,6 +28,7 @@ HORIZON_LABELS = {
     10: "10日目（2週間）",
 }
 MAX_TRACKING_BUSINESS_DAYS = 10
+RISK_MODES = ("堅実", "標準", "積極")
 
 
 def register_track_from_scan(
@@ -57,6 +60,26 @@ def register_track_from_scan(
     )
 
 
+def register_manual_track(
+    *,
+    ticker: str,
+    name: Optional[str] = None,
+    entry_price: float,
+    risk_mode: Optional[str] = None,
+    preset_matched: Optional[str] = None,
+) -> Optional[int]:
+    """スキャン結果画面から手動で検証リストへ登録する。"""
+    scan_id = f"manual_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    ev = {
+        "ticker": ticker,
+        "name": name or ticker,
+        "current_price": entry_price,
+        "buy_signal": True,
+        "preset_matched": preset_matched,
+    }
+    return register_track_from_scan(scan_id, ev, risk_mode=risk_mode)
+
+
 def _fetch_history_df(ticker: str, start: date, end: date) -> pd.DataFrame:
     symbol = ticker.strip().upper()
     if not symbol.endswith(".T") and symbol[:-1].isdigit():
@@ -84,35 +107,89 @@ def _window_metrics(df: pd.DataFrame, entry_price: float, eval_date: date) -> Op
     exit_row = available.iloc[-1]
     exit_price = float(exit_row["Close"])
     high_max = float(available["High"].max())
+    low_min = float(available["Low"].min())
     return_pct = ((exit_price - entry_price) / entry_price) * 100.0
     max_return_pct = ((high_max - entry_price) / entry_price) * 100.0
+    min_return_pct = ((low_min - entry_price) / entry_price) * 100.0
     return {
         "exit_price": exit_price,
         "return_pct": round(return_pct, 4),
         "max_return_pct": round(max_return_pct, 4),
+        "min_return_pct": round(min_return_pct, 4),
         "is_win": return_pct > 0,
+    }
+
+
+def _live_snapshot_metrics(
+    df: pd.DataFrame,
+    entry_price: float,
+    as_of_date: date,
+) -> Optional[Dict[str, float]]:
+    if df.empty or entry_price <= 0:
+        return None
+    ts_as_of = pd.Timestamp(as_of_date)
+    available = df[df.index <= ts_as_of]
+    if available.empty:
+        return None
+    current_row = available.iloc[-1]
+    current_price = float(current_row["Close"])
+    period_high = float(available["High"].max())
+    period_low = float(available["Low"].min())
+    current_return_pct = ((current_price - entry_price) / entry_price) * 100.0
+    max_return_pct = ((period_high - entry_price) / entry_price) * 100.0
+    min_return_pct = ((period_low - entry_price) / entry_price) * 100.0
+    return {
+        "current_price": round(current_price, 4),
+        "current_return_pct": round(current_return_pct, 4),
+        "period_high": round(period_high, 4),
+        "period_low": round(period_low, 4),
+        "max_return_pct": round(max_return_pct, 4),
+        "min_return_pct": round(min_return_pct, 4),
     }
 
 
 def evaluate_track(track: Dict[str, Any]) -> int:
     """1件の追跡レコードについて到達可能な horizon を評価する。"""
-    signal_date = date.fromisoformat(track["signal_date"])
+    signal_date = parse_signal_date(track["signal_date"])
     entry_price = float(track["entry_price"])
     ticker = track["ticker"]
     today = today_jst()
     updated = 0
+    track_end = add_jp_business_days(signal_date, MAX_TRACKING_BUSINESS_DAYS)
+    elapsed = business_days_between(signal_date, today)
 
     try:
         history_start = next_jp_business_day(signal_date)
-        history_end = min(today, add_jp_business_days(signal_date, MAX_TRACKING_BUSINESS_DAYS))
+        history_end = min(today, track_end)
         df = _fetch_history_df(ticker, history_start, history_end)
     except Exception as exc:
         logger.warning("追跡評価: 株価取得失敗 (%s): %s", ticker, exc)
         df = pd.DataFrame()
 
+    live = _live_snapshot_metrics(df, entry_price, min(today, track_end))
+    if live:
+        storage.update_track_snapshot(
+            track["track_id"],
+            current_price=live["current_price"],
+            current_return_pct=live["current_return_pct"],
+            period_high=live["period_high"],
+            period_low=live["period_low"],
+            max_return_pct=live["max_return_pct"],
+            min_return_pct=live["min_return_pct"],
+            business_days_elapsed=elapsed,
+        )
+
+    final_metrics: Optional[Dict[str, float]] = None
     for horizon in TRACKING_HORIZONS:
         existing = storage.get_track_outcome(track["track_id"], horizon)
         if existing and existing.get("status") == "complete":
+            if horizon == MAX_TRACKING_BUSINESS_DAYS:
+                final_metrics = {
+                    "return_pct": float(existing["return_pct"]),
+                    "max_return_pct": float(existing.get("max_return_pct") or 0),
+                    "min_return_pct": float(existing.get("min_return_pct") or 0),
+                    "is_win": bool(existing.get("is_win")),
+                }
             continue
 
         eval_date = add_jp_business_days(signal_date, horizon)
@@ -145,13 +222,30 @@ def evaluate_track(track: Dict[str, Any]) -> int:
             exit_price=metrics["exit_price"],
             return_pct=metrics["return_pct"],
             max_return_pct=metrics["max_return_pct"],
+            min_return_pct=metrics["min_return_pct"],
             is_win=metrics["is_win"],
             status="complete",
         )
         updated += 1
+        if horizon == MAX_TRACKING_BUSINESS_DAYS:
+            final_metrics = metrics
 
-    if today >= add_jp_business_days(signal_date, MAX_TRACKING_BUSINESS_DAYS):
-        storage.mark_track_completed(track["track_id"])
+    if today >= track_end and track.get("status") == "tracking":
+        if final_metrics is None and live:
+            final_metrics = {
+                "return_pct": live["current_return_pct"],
+                "max_return_pct": live["max_return_pct"],
+                "min_return_pct": live["min_return_pct"],
+                "is_win": live["current_return_pct"] > 0,
+            }
+        if final_metrics:
+            storage.mark_track_archived(
+                track["track_id"],
+                final_return_pct=final_metrics["return_pct"],
+                final_is_win=final_metrics["is_win"],
+                max_return_pct=final_metrics["max_return_pct"],
+                min_return_pct=final_metrics["min_return_pct"],
+            )
 
     return updated
 
@@ -205,6 +299,116 @@ def _aggregate_horizon(outcomes: List[Dict[str, Any]], horizon: int) -> Dict[str
     }
 
 
+def _mode_stats(mode: str) -> Dict[str, Any]:
+    all_tracks = storage.list_signal_tracks(risk_mode=mode, limit=1000)
+    archived = [t for t in all_tracks if t.get("status") == "archived"]
+    active = [t for t in all_tracks if t.get("status") == "tracking"]
+    finalized = [t for t in archived if t.get("final_return_pct") is not None]
+
+    win_rate_pct = None
+    avg_return_pct = None
+    max_profit_pct = None
+    max_loss_pct = None
+
+    if finalized:
+        wins = sum(1 for t in finalized if t.get("final_is_win"))
+        win_rate_pct = round(wins / len(finalized) * 100.0, 2)
+        avg_return_pct = round(
+            sum(float(t["final_return_pct"]) for t in finalized) / len(finalized),
+            2,
+        )
+        max_profit_pct = round(
+            max(float(t.get("max_return_pct") or t["final_return_pct"]) for t in finalized),
+            2,
+        )
+        max_loss_pct = round(
+            min(float(t.get("min_return_pct") or t["final_return_pct"]) for t in finalized),
+            2,
+        )
+
+    return {
+        "risk_mode": mode,
+        "registered_count": len(all_tracks),
+        "active_count": len(active),
+        "finalized_count": len(finalized),
+        "win_rate_pct": win_rate_pct,
+        "avg_return_pct": avg_return_pct,
+        "max_profit_pct": max_profit_pct,
+        "max_loss_pct": max_loss_pct,
+    }
+
+
+def build_mode_comparison_summary() -> Dict[str, Any]:
+    """堅実・標準・積極モードの成績を比較する。"""
+    modes = [_mode_stats(mode) for mode in RISK_MODES]
+    best_mode = None
+    best_score = -1.0
+    for row in modes:
+        if row["finalized_count"] == 0 or row["win_rate_pct"] is None:
+            continue
+        score = row["win_rate_pct"] + (row["avg_return_pct"] or 0) * 0.1
+        if score > best_score:
+            best_score = score
+            best_mode = row["risk_mode"]
+    return {
+        "modes": modes,
+        "best_mode": best_mode,
+    }
+
+
+def _track_to_dashboard_row(track: Dict[str, Any]) -> Dict[str, Any]:
+    signal_date = parse_signal_date(track["signal_date"])
+    today = today_jst()
+    elapsed = track.get("business_days_elapsed")
+    if elapsed is None:
+        elapsed = business_days_between(signal_date, today)
+
+    status = track.get("status", "tracking")
+    is_archived = status == "archived"
+    return_pct = track.get("final_return_pct") if is_archived else track.get("current_return_pct")
+
+    return {
+        "track_id": track["track_id"],
+        "ticker": track["ticker"],
+        "name": track["name"],
+        "signal_date": track["signal_date"],
+        "risk_mode": track.get("risk_mode"),
+        "entry_price": track["entry_price"],
+        "status": status,
+        "elapsed_business_days": elapsed,
+        "elapsed_label": "検証完了" if is_archived else f"{elapsed}日目",
+        "current_price": track.get("current_price"),
+        "return_pct": return_pct,
+        "period_high": track.get("period_high"),
+        "period_low": track.get("period_low"),
+        "max_return_pct": track.get("max_return_pct"),
+        "min_return_pct": track.get("min_return_pct"),
+        "is_win": track.get("final_is_win") if is_archived else ((return_pct or 0) > 0),
+        "archived_at": track.get("archived_at"),
+        "preset_matched": track.get("preset_matched"),
+    }
+
+
+def build_forward_test_dashboard(*, auto_evaluate: bool = True) -> Dict[str, Any]:
+    """パフォーマンス検証ダッシュボード用データを返す。"""
+    if auto_evaluate:
+        evaluate_pending_tracks(limit=200)
+
+    active = storage.list_signal_tracks(status="tracking", limit=100)
+    archived = storage.list_signal_tracks(status="archived", limit=200)
+    tracks = [_track_to_dashboard_row(t) for t in active + archived]
+
+    return {
+        "status": "success",
+        "tracking_period_business_days": MAX_TRACKING_BUSINESS_DAYS,
+        "checkpoints": [HORIZON_LABELS[h] for h in TRACKING_HORIZONS],
+        "mode_comparison": build_mode_comparison_summary(),
+        "tracks": tracks,
+        "active_count": len(active),
+        "archived_count": len(archived),
+    }
+
+
 def build_tracking_summary(
     *,
     risk_mode: Optional[str] = None,
@@ -228,13 +432,14 @@ def build_tracking_summary(
     return {
         "status": "success",
         "tracking_period_business_days": MAX_TRACKING_BUSINESS_DAYS,
-        "checkpoints": ["3日目", "5日目（1週間）", "10日目（2週間）"],
+        "checkpoints": [HORIZON_LABELS[h] for h in TRACKING_HORIZONS],
         "total_registered": total_registered,
         "filters": {
             "risk_mode": risk_mode,
             "preset_matched": preset_matched,
         },
         "horizons": horizons,
+        "mode_comparison": build_mode_comparison_summary(),
         "notes": {
             "win_rate_pct": "各時点の終値ベース損益がプラスの比率",
             "avg_return_pct": "各時点の平均損益率（終値ベース）",
