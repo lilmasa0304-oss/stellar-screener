@@ -399,7 +399,54 @@
             </p>
         </section>
 
-        <!-- ④ AI 診断チャット -->
+        <!-- ④ シグナル追跡成績（最大2週間） -->
+        <section class="neon-card section-card border-t-2 border-t-amber-500/30 space-y-4">
+            <div class="section-heading mb-0">
+                <div class="section-icon bg-amber-950/40 border border-amber-800/40 text-amber-400">
+                    <i class="fa-solid fa-chart-line"></i>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <h2 class="section-title text-amber-400">④ シグナル追跡成績（最大2週間）</h2>
+                    <p class="section-desc">
+                        BUY SIGNAL 登録後、最大10営業日（2週間）まで追跡します。
+                        <strong class="text-slate-300">3日目・5日目（1週間）・10日目（2週間）</strong>の各時点で
+                        最高益達成率・勝率・平均損益率を比較できます。
+                    </p>
+                </div>
+            </div>
+
+            <div class="flex flex-wrap gap-2 items-center">
+                <span class="text-xs text-slate-500">フィルター:</span>
+                <span id="tracking-mode-label" class="text-xs font-bold text-amber-400 mono-font">堅実</span>
+                <button type="button" onclick="loadTrackingSummary(true)"
+                    class="ml-auto text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-lg min-h-[36px]">
+                    <i class="fa-solid fa-rotate-right mr-1"></i> 成績を更新
+                </button>
+            </div>
+
+            <p id="tracking-summary-meta" class="text-sm text-slate-500">読み込み中...</p>
+
+            <div class="overflow-x-auto rounded-xl border border-slate-800/80">
+                <table class="w-full text-sm text-left min-w-[640px]">
+                    <thead class="bg-slate-900/70 text-slate-400 text-xs uppercase">
+                        <tr>
+                            <th class="px-4 py-3 font-bold">時点</th>
+                            <th class="px-4 py-3 font-bold text-right">評価件数</th>
+                            <th class="px-4 py-3 font-bold text-right">最高益達成率</th>
+                            <th class="px-4 py-3 font-bold text-right">勝率</th>
+                            <th class="px-4 py-3 font-bold text-right">平均損益率</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tracking-summary-body" class="divide-y divide-slate-800/70 text-slate-200 mono-font">
+                    </tbody>
+                </table>
+            </div>
+            <p class="text-xs text-slate-500 leading-relaxed">
+                ※ 最高益達成率＝登録から各時点までの高値ベース平均最高益率。勝率・平均損益率は各時点終値ベース。
+            </p>
+        </section>
+
+        <!-- ⑤ AI 診断チャット -->
         <section id="chat-container"
             class="neon-card section-card border-t-2 border-t-cyan-500/40 bg-gradient-to-b from-cyan-950/5 to-transparent space-y-4">
             <div class="section-heading mb-0 pb-3">
@@ -408,7 +455,7 @@
                 </div>
                 <div class="flex-1 min-w-0">
                     <div class="flex flex-wrap justify-between items-start gap-2">
-                        <h2 class="section-title text-cyan-400">④ 統合AI診断チャット（テクニカル＆ファンダメンタルズ）</h2>
+                        <h2 class="section-title text-cyan-400">⑤ 統合AI診断チャット（テクニカル＆ファンダメンタルズ）</h2>
                         <span id="ai-status-badge"
                             class="text-xs bg-slate-900 text-slate-400 border border-slate-700 px-2.5 py-1 rounded font-bold mono-font">接続確認中</span>
                     </div>
@@ -683,6 +730,7 @@
             });
             document.getElementById('scan-status').textContent =
                 `選択中: 【${mode}】モード。JPX400（約400銘柄）リアルタイムスキャンに適用されます。`;
+            loadTrackingSummary(false);
         }
 
         function setScanBusy(busy) {
@@ -693,6 +741,55 @@
         function formatRsi(value) {
             if (value == null || Number.isNaN(Number(value))) return '—';
             return Number(value).toFixed(2);
+        }
+
+        function formatPct(value) {
+            if (value == null || Number.isNaN(Number(value))) return '—';
+            const num = Number(value);
+            const sign = num > 0 ? '+' : '';
+            return `${sign}${num.toFixed(2)}%`;
+        }
+
+        async function loadTrackingSummary(forceEvaluate = false) {
+            const bodyEl = document.getElementById('tracking-summary-body');
+            const metaEl = document.getElementById('tracking-summary-meta');
+            const modeLabel = document.getElementById('tracking-mode-label');
+            if (!bodyEl || !metaEl) return;
+
+            modeLabel.textContent = selectedRiskMode;
+            metaEl.textContent = '成績を集計中...';
+            bodyEl.innerHTML = '';
+
+            try {
+                const url = `/api/tracking/summary?risk_mode=${encodeURIComponent(selectedRiskMode)}&auto_evaluate=${forceEvaluate ? 'true' : 'true'}`;
+                const data = await fetch(url).then((r) => r.json());
+                if (!data || !Array.isArray(data.horizons)) {
+                    throw new Error('成績データの形式が不正です');
+                }
+
+                metaEl.textContent = `登録シグナル ${data.total_registered || 0} 件 / 追跡期間 最大${data.tracking_period_business_days || 10}営業日`;
+
+                if (data.horizons.length === 0) {
+                    bodyEl.innerHTML = '<tr><td colspan="5" class="px-4 py-6 text-center text-slate-500">まだ追跡データがありません。BUY SIGNAL 検出後に成績が蓄積されます。</td></tr>';
+                    return;
+                }
+
+                data.horizons.forEach((row) => {
+                    const tr = document.createElement('tr');
+                    tr.className = 'hover:bg-slate-900/40';
+                    tr.innerHTML = `
+                        <td class="px-4 py-3 font-bold text-slate-100">${escapeHtml(row.label || '')}</td>
+                        <td class="px-4 py-3 text-right">${row.evaluated_count ?? 0}<span class="text-slate-500 text-xs"> / ${row.registered_count ?? 0}</span></td>
+                        <td class="px-4 py-3 text-right text-amber-400 font-bold">${formatPct(row.max_return_achievement_rate_pct)}</td>
+                        <td class="px-4 py-3 text-right text-emerald-400 font-bold">${formatPct(row.win_rate_pct)}</td>
+                        <td class="px-4 py-3 text-right">${formatPct(row.avg_return_pct)}</td>
+                    `;
+                    bodyEl.appendChild(tr);
+                });
+            } catch (error) {
+                metaEl.textContent = `成績の取得に失敗しました: ${error.message}`;
+                bodyEl.innerHTML = '<tr><td colspan="5" class="px-4 py-6 text-center text-pink-400">データを読み込めませんでした。</td></tr>';
+            }
         }
 
         function formatPrice(value) {
@@ -852,6 +949,7 @@
                 updateScanProgressUI(data);
                 renderScanHits(data.buy_signals || []);
                 scanStatus.textContent = data.message || `JPX400 スキャン完了: BUY SIGNAL ${data.buy_count || 0} 件`;
+                loadTrackingSummary(true);
             } catch (error) {
                 showScanResults();
                 updateScanProgressUI({ status: 'failed', error: error.message });
@@ -1053,6 +1151,7 @@
         selectRiskMode('堅実');
         loadWatchlist();
         loadAiStatus();
+        loadTrackingSummary(false);
     </script>
 </body>
 

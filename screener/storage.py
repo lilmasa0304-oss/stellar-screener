@@ -78,6 +78,44 @@ def init_db() -> None:
                 ON scan_results(buy_signal);
             CREATE INDEX IF NOT EXISTS idx_ss_status
                 ON scan_sessions(status);
+
+            CREATE TABLE IF NOT EXISTS signal_tracks (
+                track_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_result_id   INTEGER,
+                scan_id          TEXT NOT NULL,
+                ticker           TEXT NOT NULL,
+                name             TEXT NOT NULL,
+                signal_date      TEXT NOT NULL,
+                entry_price      REAL NOT NULL,
+                preset_matched   TEXT,
+                risk_mode        TEXT,
+                registered_at    TEXT NOT NULL,
+                status           TEXT NOT NULL DEFAULT 'tracking',
+                UNIQUE(scan_id, ticker, signal_date)
+            );
+
+            CREATE TABLE IF NOT EXISTS signal_track_outcomes (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id         INTEGER NOT NULL,
+                horizon_days     INTEGER NOT NULL,
+                horizon_label    TEXT NOT NULL,
+                eval_date        TEXT,
+                exit_price       REAL,
+                return_pct       REAL,
+                max_return_pct   REAL,
+                is_win           INTEGER,
+                evaluated_at     TEXT,
+                status           TEXT NOT NULL DEFAULT 'pending',
+                UNIQUE(track_id, horizon_days),
+                FOREIGN KEY (track_id) REFERENCES signal_tracks(track_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_st_status
+                ON signal_tracks(status);
+            CREATE INDEX IF NOT EXISTS idx_sto_track
+                ON signal_track_outcomes(track_id);
+            CREATE INDEX IF NOT EXISTS idx_sto_horizon
+                ON signal_track_outcomes(horizon_days);
         """)
     logger.info(f"DB initialized at {DB_PATH.resolve()}")
 
@@ -163,11 +201,11 @@ def list_sessions(limit: int = 20) -> List[Dict[str, Any]]:
 # 銘柄結果操作
 # ─────────────────────────────────────────────────────────────────────────────
 
-def save_result(scan_id: str, ev: Dict[str, Any]) -> None:
+def save_result(scan_id: str, ev: Dict[str, Any]) -> int:
     """1銘柄の評価結果を保存する。"""
     now = datetime.utcnow().isoformat()
     with _get_conn() as conn:
-        conn.execute(
+        cursor = conn.execute(
             """INSERT INTO scan_results
                (scan_id, ticker, name, current_price, change_percent,
                 buy_signal, is_prime_entry, triggered, signals,
@@ -195,6 +233,7 @@ def save_result(scan_id: str, ev: Dict[str, Any]) -> None:
                 now,
             ),
         )
+        return int(cursor.lastrowid)
 
 
 def get_results(scan_id: str, buy_signal_only: bool = False) -> List[Dict[str, Any]]:
@@ -246,3 +285,191 @@ def get_history_buy_signals(limit: int = 50) -> List[Dict[str, Any]]:
         d["macd_pre_crossover"] = bool(d["macd_pre_crossover"])
         results.append(d)
     return results
+
+
+def register_signal_track(
+    *,
+    scan_id: str,
+    ticker: str,
+    name: str,
+    signal_date: str,
+    entry_price: float,
+    preset_matched: Optional[str] = None,
+    risk_mode: Optional[str] = None,
+    scan_result_id: Optional[int] = None,
+) -> Optional[int]:
+    """BUY SIGNAL を追跡テーブルへ登録する（重複は無視）。"""
+    now = datetime.utcnow().isoformat()
+    with _get_conn() as conn:
+        try:
+            cursor = conn.execute(
+                """INSERT INTO signal_tracks
+                   (scan_result_id, scan_id, ticker, name, signal_date,
+                    entry_price, preset_matched, risk_mode, registered_at, status)
+                   VALUES (?,?,?,?,?,?,?,?,?, 'tracking')""",
+                (
+                    scan_result_id,
+                    scan_id,
+                    ticker,
+                    name,
+                    signal_date,
+                    entry_price,
+                    preset_matched,
+                    risk_mode,
+                    now,
+                ),
+            )
+            track_id = int(cursor.lastrowid)
+        except sqlite3.IntegrityError:
+            row = conn.execute(
+                """SELECT track_id FROM signal_tracks
+                   WHERE scan_id=? AND ticker=? AND signal_date=?""",
+                (scan_id, ticker, signal_date),
+            ).fetchone()
+            track_id = int(row["track_id"]) if row else None
+            if track_id is None:
+                return None
+
+        for horizon, label in ((3, "3日目"), (5, "5日目（1週間）"), (10, "10日目（2週間）")):
+            conn.execute(
+                """INSERT OR IGNORE INTO signal_track_outcomes
+                   (track_id, horizon_days, horizon_label, status)
+                   VALUES (?,?,?, 'pending')""",
+                (track_id, horizon, label),
+            )
+        return track_id
+
+
+def list_active_signal_tracks(limit: int = 100) -> List[Dict[str, Any]]:
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM signal_tracks
+               WHERE status='tracking'
+               ORDER BY registered_at DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_track_completed(track_id: int) -> None:
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE signal_tracks SET status='completed' WHERE track_id=?",
+            (track_id,),
+        )
+
+
+def get_track_outcome(track_id: int, horizon_days: int) -> Optional[Dict[str, Any]]:
+    with _get_conn() as conn:
+        row = conn.execute(
+            """SELECT * FROM signal_track_outcomes
+               WHERE track_id=? AND horizon_days=?""",
+            (track_id, horizon_days),
+        ).fetchone()
+    if not row:
+        return None
+    data = dict(row)
+    if data.get("is_win") is not None:
+        data["is_win"] = bool(data["is_win"])
+    return data
+
+
+def upsert_track_outcome(
+    *,
+    track_id: int,
+    horizon_days: int,
+    horizon_label: str,
+    eval_date: Optional[str] = None,
+    exit_price: Optional[float] = None,
+    return_pct: Optional[float] = None,
+    max_return_pct: Optional[float] = None,
+    is_win: Optional[bool] = None,
+    status: str,
+) -> None:
+    now = datetime.utcnow().isoformat()
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT INTO signal_track_outcomes
+               (track_id, horizon_days, horizon_label, eval_date, exit_price,
+                return_pct, max_return_pct, is_win, evaluated_at, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(track_id, horizon_days) DO UPDATE SET
+                 horizon_label=excluded.horizon_label,
+                 eval_date=excluded.eval_date,
+                 exit_price=excluded.exit_price,
+                 return_pct=excluded.return_pct,
+                 max_return_pct=excluded.max_return_pct,
+                 is_win=excluded.is_win,
+                 evaluated_at=excluded.evaluated_at,
+                 status=excluded.status""",
+            (
+                track_id,
+                horizon_days,
+                horizon_label,
+                eval_date,
+                exit_price,
+                return_pct,
+                max_return_pct,
+                int(is_win) if is_win is not None else None,
+                now if status == "complete" else None,
+                status,
+            ),
+        )
+
+
+def _track_filters_sql(
+    risk_mode: Optional[str],
+    preset_matched: Optional[str],
+) -> tuple[str, List[Any]]:
+    clauses: List[str] = []
+    params: List[Any] = []
+    if risk_mode:
+        clauses.append("t.risk_mode = ?")
+        params.append(risk_mode)
+    if preset_matched:
+        clauses.append("t.preset_matched = ?")
+        params.append(preset_matched)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, params
+
+
+def list_track_outcomes(
+    *,
+    risk_mode: Optional[str] = None,
+    preset_matched: Optional[str] = None,
+    limit: int = 5000,
+) -> List[Dict[str, Any]]:
+    where, params = _track_filters_sql(risk_mode, preset_matched)
+    params.append(limit)
+    with _get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT o.*, t.ticker, t.name, t.signal_date, t.risk_mode, t.preset_matched
+                FROM signal_track_outcomes o
+                JOIN signal_tracks t ON t.track_id = o.track_id
+                {where}
+                ORDER BY t.registered_at DESC, o.horizon_days ASC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+    results = []
+    for row in rows:
+        data = dict(row)
+        if data.get("is_win") is not None:
+            data["is_win"] = bool(data["is_win"])
+        results.append(data)
+    return results
+
+
+def count_signal_tracks(
+    *,
+    risk_mode: Optional[str] = None,
+    preset_matched: Optional[str] = None,
+) -> int:
+    where, params = _track_filters_sql(risk_mode, preset_matched)
+    with _get_conn() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM signal_tracks t {where}",
+            params,
+        ).fetchone()
+    return int(row["cnt"]) if row else 0

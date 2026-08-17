@@ -52,7 +52,11 @@ from screener.jp_stock_code import (
     split_stock_codes,
 )
 from screener.jp_stock_names import resolve_jp_display_name
-from screener.strategy import StrategyEvaluator
+from screener.signal_tracker import (
+    build_tracking_summary,
+    evaluate_pending_tracks,
+    register_track_from_scan,
+)
 from screener import storage
 from screener.scheduler import start_scheduler, stop_scheduler, get_next_run_time
 
@@ -616,7 +620,14 @@ async def _execute_jpx400_realtime_scan(selected_mode: str = "堅実") -> Dict[s
         for k in ("current_price", "rsi"):
             if ev.get(k) is not None:
                 ev[k] = float(ev[k])
-        storage.save_result(scan_id, ev)
+        result_id = storage.save_result(scan_id, ev)
+        ev["buy_signal"] = True
+        register_track_from_scan(
+            scan_id,
+            ev,
+            risk_mode=safe_mode,
+            scan_result_id=result_id,
+        )
         buy_signals.append(ev)
 
     elapsed = round(time.monotonic() - started, 2)
@@ -728,13 +739,41 @@ def get_scan_results(scan_id: str, buy_signal_only: bool = False):
     try:
         session = storage.get_session(scan_id)
         if not session:
-            raise HTTPException(status_code=404, detail=f"scan_id '{scan_id}' が見つかりません。")
+            raise HTTPException(status_code=404, detail="スキャンが見つかりません。")
         results = storage.get_results(scan_id, buy_signal_only=buy_signal_only)
-        return {"session": session, "results": results}
+        return {"scan_id": scan_id, "session": session, "results": results}
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"スキャン結果の取得に失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"結果の取得に失敗: {e}")
+
+
+# ── シグナル追跡 API ─────────────────────────────────────────────────────
+@app.get("/api/tracking/summary")
+def get_tracking_summary(
+    risk_mode: Optional[str] = None,
+    preset_matched: Optional[str] = None,
+    auto_evaluate: bool = True,
+):
+    """3/5/10営業日目の勝率・平均損益率・最高益達成率を比較集計する。"""
+    try:
+        return build_tracking_summary(
+            risk_mode=risk_mode,
+            preset_matched=preset_matched,
+            auto_evaluate=auto_evaluate,
+        )
+    except Exception as e:
+        logger.exception("追跡サマリー取得失敗: %s", e)
+        raise HTTPException(status_code=500, detail=f"追跡サマリーの取得に失敗: {e}") from e
+
+
+@app.post("/api/tracking/evaluate")
+def evaluate_tracking(limit: int = 100):
+    """未評価の追跡シグナルを手動評価する。"""
+    try:
+        return evaluate_pending_tracks(limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"追跡評価に失敗: {e}") from e
 
 
 # ── 銘柄診断 API（外部連携・後方互換） ───────────────────────────────────
