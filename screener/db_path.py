@@ -1,4 +1,4 @@
-"""SQLite DB パスの解決（ローカル / Render Persistent Disk / 明示 env）。"""
+"""ローカル SQLite ファイルパスの解決（DATABASE_URL 未設定時のフォールバック）。"""
 
 from __future__ import annotations
 

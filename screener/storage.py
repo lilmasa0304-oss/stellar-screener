@@ -1,25 +1,33 @@
 """
-SQLite ベースの永続化ストレージ。
+永続化ストレージ（PostgreSQL / SQLite）。
 
-検証リスト（signal_tracks）・スキャン結果・成績データを SQLite に保存する。
-Render 本番では Persistent Disk（/var/data）+ DB_PATH を使用すること。
-
-テーブル:
-  scan_sessions       — スキャン実行ごとのメタ情報
-  scan_results        — 各銘柄の評価結果
-  signal_tracks       — フォワードテスト検証リスト
-  signal_track_outcomes — 時点別成績
+DATABASE_URL 設定時は Supabase PostgreSQL 等の外部 DB へ接続。
+未設定時はローカル SQLite（data/screener.db）を使用する。
 """
+
+from __future__ import annotations
 
 import json
 import logging
 import os
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from screener.db_path import is_persistent_storage, resolve_db_path, resolve_disk_mount
+from screener.database import (
+    connect,
+    execute,
+    fetchall,
+    fetchone,
+    get_backend,
+    get_storage_info,
+    insert_ignore,
+    insert_returning_id,
+    is_persistent_storage,
+    reset_engine,
+)
+from screener.db_path import resolve_db_path
+from screener.db_schema import init_schema
 
 logger = logging.getLogger(__name__)
 
@@ -30,183 +38,35 @@ _storage_warned_ephemeral = False
 def refresh_db_path() -> Path:
     """環境変数変更後に DB パスを再解決する（主にテスト用）。"""
     global DB_PATH
+    reset_engine()
     DB_PATH = resolve_db_path()
     return DB_PATH
-
-
-def get_storage_info() -> Dict[str, Any]:
-    """ヘルスチェック・運用確認用のストレージ情報。"""
-    mount = resolve_disk_mount()
-    persistent = is_persistent_storage(DB_PATH)
-    return {
-        "db_path": str(DB_PATH.resolve()),
-        "db_persistent": persistent,
-        "disk_mount": str(mount.resolve()) if mount else None,
-        "platform_render": os.getenv("RENDER") == "true",
-        "platform_vercel": os.getenv("VERCEL") == "1",
-    }
 
 
 def _warn_if_ephemeral() -> None:
     global _storage_warned_ephemeral
     if _storage_warned_ephemeral:
         return
-    if os.getenv("RENDER") == "true" and not is_persistent_storage(DB_PATH):
+    if os.getenv("RENDER") == "true" and not is_persistent_storage():
         logger.warning(
-            "Render エフェメラルディスク上の DB (%s) を使用中。"
-            "再起動・再デプロイで検証リストが消えます。"
-            "Persistent Disk をマウントし DB_PATH=/var/data/screener.db を設定してください。",
+            "Render 上で DATABASE_URL が未設定です（エフェメラル SQLite: %s）。"
+            "検証リストを永続化するには Supabase 等の DATABASE_URL を設定してください。",
             DB_PATH.resolve(),
         )
         _storage_warned_ephemeral = True
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-def _get_conn() -> sqlite3.Connection:
-    """スレッドセーフな DB 接続を返す。"""
-    _warn_if_ephemeral()
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    if os.getenv("SQLITE_TEST_MODE") == "1":
-        conn.execute("PRAGMA journal_mode=DELETE")
-    else:
-        conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
-
-
 def init_db() -> None:
     """DB とテーブルを初期化する（初回起動時に呼び出す）。"""
-    with _get_conn() as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS scan_sessions (
-                scan_id          TEXT PRIMARY KEY,
-                started_at       TEXT NOT NULL,
-                completed_at     TEXT,
-                status           TEXT NOT NULL DEFAULT 'running',
-                scan_type        TEXT NOT NULL DEFAULT 'manual',
-                total_tickers    INTEGER DEFAULT 0,
-                processed        INTEGER DEFAULT 0,
-                buy_signal_count INTEGER DEFAULT 0,
-                sent_line        INTEGER DEFAULT 0,
-                error_message    TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS scan_results (
-                id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_id          TEXT NOT NULL,
-                ticker           TEXT NOT NULL,
-                name             TEXT NOT NULL,
-                current_price    REAL,
-                change_percent   REAL,
-                buy_signal       INTEGER DEFAULT 0,
-                is_prime_entry   INTEGER DEFAULT 0,
-                triggered        INTEGER DEFAULT 0,
-                signals          TEXT,
-                rsi              REAL,
-                ma25             REAL,
-                macd             REAL,
-                macd_signal      REAL,
-                macd_hist        REAL,
-                macd_crossover   INTEGER DEFAULT 0,
-                macd_pre_crossover INTEGER DEFAULT 0,
-                ma25_uptrend     INTEGER DEFAULT 0,
-                scanned_at       TEXT NOT NULL,
-                FOREIGN KEY (scan_id) REFERENCES scan_sessions(scan_id)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_sr_scan_id
-                ON scan_results(scan_id);
-            CREATE INDEX IF NOT EXISTS idx_sr_buy_signal
-                ON scan_results(buy_signal);
-            CREATE INDEX IF NOT EXISTS idx_ss_status
-                ON scan_sessions(status);
-
-            CREATE TABLE IF NOT EXISTS signal_tracks (
-                track_id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_result_id   INTEGER,
-                scan_id          TEXT NOT NULL,
-                ticker           TEXT NOT NULL,
-                name             TEXT NOT NULL,
-                signal_date      TEXT NOT NULL,
-                entry_price      REAL NOT NULL,
-                preset_matched   TEXT,
-                risk_mode        TEXT,
-                registered_at    TEXT NOT NULL,
-                status           TEXT NOT NULL DEFAULT 'tracking',
-                UNIQUE(scan_id, ticker, signal_date)
-            );
-
-            CREATE TABLE IF NOT EXISTS signal_track_outcomes (
-                id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                track_id         INTEGER NOT NULL,
-                horizon_days     INTEGER NOT NULL,
-                horizon_label    TEXT NOT NULL,
-                eval_date        TEXT,
-                exit_price       REAL,
-                return_pct       REAL,
-                max_return_pct   REAL,
-                is_win           INTEGER,
-                evaluated_at     TEXT,
-                status           TEXT NOT NULL DEFAULT 'pending',
-                UNIQUE(track_id, horizon_days),
-                FOREIGN KEY (track_id) REFERENCES signal_tracks(track_id)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_st_status
-                ON signal_tracks(status);
-            CREATE INDEX IF NOT EXISTS idx_sto_track
-                ON signal_track_outcomes(track_id);
-            CREATE INDEX IF NOT EXISTS idx_sto_horizon
-                ON signal_track_outcomes(horizon_days);
-        """)
-        _migrate_signal_tracks(conn)
+    _warn_if_ephemeral()
+    with connect() as conn:
+        init_schema(conn)
     info = get_storage_info()
     logger.info(
-        "DB initialized at %s (persistent=%s)",
-        info["db_path"],
-        info["db_persistent"],
+        "DB initialized (backend=%s, persistent=%s)",
+        info.get("backend"),
+        info.get("db_persistent"),
     )
-
-
-def _migrate_signal_tracks(conn: sqlite3.Connection) -> None:
-    """既存 DB へ signal_tracks のライブ snapshot 列を追加する。"""
-    columns = (
-        ("current_price", "REAL"),
-        ("current_return_pct", "REAL"),
-        ("period_high", "REAL"),
-        ("period_low", "REAL"),
-        ("max_return_pct", "REAL"),
-        ("min_return_pct", "REAL"),
-        ("business_days_elapsed", "INTEGER"),
-        ("final_return_pct", "REAL"),
-        ("final_is_win", "INTEGER"),
-        ("archived_at", "TEXT"),
-        ("last_updated_at", "TEXT"),
-    )
-    for name, col_type in columns:
-        try:
-            conn.execute(f"ALTER TABLE signal_tracks ADD COLUMN {name} {col_type}")
-        except sqlite3.OperationalError:
-            pass
-    try:
-        conn.execute(
-            "ALTER TABLE signal_track_outcomes ADD COLUMN min_return_pct REAL"
-        )
-    except sqlite3.OperationalError:
-        pass
-    conn.execute(
-        "UPDATE signal_tracks SET status='archived' WHERE status='completed'"
-    )
-    for horizon, label in ((5, "5日目（1週間）"), (10, "10日目（2週間）")):
-        conn.execute(
-            """INSERT OR IGNORE INTO signal_track_outcomes
-               (track_id, horizon_days, horizon_label, status)
-               SELECT track_id, ?, ?, 'pending' FROM signal_tracks""",
-            (horizon, label),
-        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -214,10 +74,10 @@ def _migrate_signal_tracks(conn: sqlite3.Connection) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def create_session(scan_id: str, scan_type: str, total_tickers: int) -> None:
-    """新しいスキャンセッションを作成する。"""
     now = datetime.utcnow().isoformat()
-    with _get_conn() as conn:
-        conn.execute(
+    with connect() as conn:
+        execute(
+            conn,
             """INSERT INTO scan_sessions
                (scan_id, started_at, status, scan_type, total_tickers)
                VALUES (?, ?, 'running', ?, ?)""",
@@ -226,9 +86,9 @@ def create_session(scan_id: str, scan_type: str, total_tickers: int) -> None:
 
 
 def update_session_progress(scan_id: str, processed: int) -> None:
-    """処理済み件数を更新する。"""
-    with _get_conn() as conn:
-        conn.execute(
+    with connect() as conn:
+        execute(
+            conn,
             "UPDATE scan_sessions SET processed=? WHERE scan_id=?",
             (processed, scan_id),
         )
@@ -240,11 +100,11 @@ def complete_session(
     sent_line: bool,
     error_message: Optional[str] = None,
 ) -> None:
-    """セッションを完了状態にする。"""
-    now    = datetime.utcnow().isoformat()
+    now = datetime.utcnow().isoformat()
     status = "failed" if error_message else "completed"
-    with _get_conn() as conn:
-        conn.execute(
+    with connect() as conn:
+        execute(
+            conn,
             """UPDATE scan_sessions
                SET completed_at=?, status=?, buy_signal_count=?, sent_line=?, error_message=?
                WHERE scan_id=?""",
@@ -253,37 +113,31 @@ def complete_session(
 
 
 def get_session(scan_id: str) -> Optional[Dict[str, Any]]:
-    """セッション情報を取得する。"""
-    with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM scan_sessions WHERE scan_id=?", (scan_id,)
-        ).fetchone()
-    return dict(row) if row else None
+    with connect() as conn:
+        return fetchone(conn, "SELECT * FROM scan_sessions WHERE scan_id=?", (scan_id,))
 
 
 def get_latest_session(scan_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """最新のセッション情報を返す。"""
-    with _get_conn() as conn:
+    with connect() as conn:
         if scan_type:
-            row = conn.execute(
+            return fetchone(
+                conn,
                 "SELECT * FROM scan_sessions WHERE scan_type=? ORDER BY started_at DESC LIMIT 1",
                 (scan_type,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT * FROM scan_sessions ORDER BY started_at DESC LIMIT 1"
-            ).fetchone()
-    return dict(row) if row else None
+            )
+        return fetchone(
+            conn,
+            "SELECT * FROM scan_sessions ORDER BY started_at DESC LIMIT 1",
+        )
 
 
 def list_sessions(limit: int = 20) -> List[Dict[str, Any]]:
-    """過去のスキャンセッション一覧を返す（新しい順）。"""
-    with _get_conn() as conn:
-        rows = conn.execute(
+    with connect() as conn:
+        return fetchall(
+            conn,
             "SELECT * FROM scan_sessions ORDER BY started_at DESC LIMIT ?",
             (limit,),
-        ).fetchall()
-    return [dict(r) for r in rows]
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -291,10 +145,10 @@ def list_sessions(limit: int = 20) -> List[Dict[str, Any]]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def save_result(scan_id: str, ev: Dict[str, Any]) -> int:
-    """1銘柄の評価結果を保存する。"""
     now = datetime.utcnow().isoformat()
-    with _get_conn() as conn:
-        cursor = conn.execute(
+    with connect() as conn:
+        return insert_returning_id(
+            conn,
             """INSERT INTO scan_results
                (scan_id, ticker, name, current_price, change_percent,
                 buy_signal, is_prime_entry, triggered, signals,
@@ -321,41 +175,43 @@ def save_result(scan_id: str, ev: Dict[str, Any]) -> int:
                 int(ev.get("ma25_uptrend", False)),
                 now,
             ),
+            pk="id",
         )
-        return int(cursor.lastrowid)
+
+
+def _normalize_scan_result(row: Dict[str, Any]) -> Dict[str, Any]:
+    data = dict(row)
+    data["signals"] = json.loads(data["signals"]) if data.get("signals") else []
+    data["buy_signal"] = bool(data.get("buy_signal"))
+    data["is_prime_entry"] = bool(data.get("is_prime_entry"))
+    data["triggered"] = bool(data.get("triggered"))
+    data["macd_crossover"] = bool(data.get("macd_crossover"))
+    data["macd_pre_crossover"] = bool(data.get("macd_pre_crossover"))
+    data["ma25_uptrend"] = bool(data.get("ma25_uptrend"))
+    return data
 
 
 def get_results(scan_id: str, buy_signal_only: bool = False) -> List[Dict[str, Any]]:
-    """指定セッションの銘柄結果を取得する。"""
-    with _get_conn() as conn:
+    with connect() as conn:
         if buy_signal_only:
-            rows = conn.execute(
+            rows = fetchall(
+                conn,
                 "SELECT * FROM scan_results WHERE scan_id=? AND buy_signal=1 ORDER BY rsi",
                 (scan_id,),
-            ).fetchall()
+            )
         else:
-            rows = conn.execute(
+            rows = fetchall(
+                conn,
                 "SELECT * FROM scan_results WHERE scan_id=? ORDER BY buy_signal DESC, rsi",
                 (scan_id,),
-            ).fetchall()
-    results = []
-    for r in rows:
-        d = dict(r)
-        d["signals"] = json.loads(d["signals"]) if d["signals"] else []
-        d["buy_signal"]         = bool(d["buy_signal"])
-        d["is_prime_entry"]     = bool(d["is_prime_entry"])
-        d["triggered"]          = bool(d["triggered"])
-        d["macd_crossover"]     = bool(d["macd_crossover"])
-        d["macd_pre_crossover"] = bool(d["macd_pre_crossover"])
-        d["ma25_uptrend"]       = bool(d["ma25_uptrend"])
-        results.append(d)
-    return results
+            )
+    return [_normalize_scan_result(r) for r in rows]
 
 
 def get_history_buy_signals(limit: int = 50) -> List[Dict[str, Any]]:
-    """過去のスキャンで BUY SIGNAL が出た銘柄を新しい順に返す。"""
-    with _get_conn() as conn:
-        rows = conn.execute(
+    with connect() as conn:
+        rows = fetchall(
+            conn,
             """SELECT r.*, s.started_at as session_started_at, s.scan_type
                FROM scan_results r
                JOIN scan_sessions s ON r.scan_id = s.scan_id
@@ -363,16 +219,11 @@ def get_history_buy_signals(limit: int = 50) -> List[Dict[str, Any]]:
                ORDER BY r.scanned_at DESC
                LIMIT ?""",
             (limit,),
-        ).fetchall()
+        )
     results = []
-    for r in rows:
-        d = dict(r)
-        d["signals"] = json.loads(d["signals"]) if d["signals"] else []
-        d["buy_signal"]         = bool(d["buy_signal"])
-        d["ma25_uptrend"]       = bool(d["ma25_uptrend"])
-        d["macd_crossover"]     = bool(d["macd_crossover"])
-        d["macd_pre_crossover"] = bool(d["macd_pre_crossover"])
-        results.append(d)
+    for row in rows:
+        data = _normalize_scan_result(row)
+        results.append(data)
     return results
 
 
@@ -387,15 +238,17 @@ def register_signal_track(
     risk_mode: Optional[str] = None,
     scan_result_id: Optional[int] = None,
 ) -> Optional[int]:
-    """BUY SIGNAL を追跡テーブルへ登録する（重複は無視）。"""
     now = datetime.utcnow().isoformat()
-    with _get_conn() as conn:
-        try:
-            cursor = conn.execute(
+    with connect() as conn:
+        if get_backend() == "postgresql":
+            row = fetchone(
+                conn,
                 """INSERT INTO signal_tracks
                    (scan_result_id, scan_id, ticker, name, signal_date,
                     entry_price, preset_matched, risk_mode, registered_at, status)
-                   VALUES (?,?,?,?,?,?,?,?,?, 'tracking')""",
+                   VALUES (?,?,?,?,?,?,?,?,?, 'tracking')
+                   ON CONFLICT (scan_id, ticker, signal_date) DO NOTHING
+                   RETURNING track_id""",
                 (
                     scan_result_id,
                     scan_id,
@@ -408,41 +261,77 @@ def register_signal_track(
                     now,
                 ),
             )
-            track_id = int(cursor.lastrowid)
-        except sqlite3.IntegrityError:
-            row = conn.execute(
-                """SELECT track_id FROM signal_tracks
-                   WHERE scan_id=? AND ticker=? AND signal_date=?""",
-                (scan_id, ticker, signal_date),
-            ).fetchone()
-            track_id = int(row["track_id"]) if row else None
-            if track_id is None:
-                return None
+            if row:
+                track_id = int(row["track_id"])
+            else:
+                existing = fetchone(
+                    conn,
+                    """SELECT track_id FROM signal_tracks
+                       WHERE scan_id=? AND ticker=? AND signal_date=?""",
+                    (scan_id, ticker, signal_date),
+                )
+                track_id = int(existing["track_id"]) if existing else None
+        else:
+            try:
+                track_id = insert_returning_id(
+                    conn,
+                    """INSERT INTO signal_tracks
+                       (scan_result_id, scan_id, ticker, name, signal_date,
+                        entry_price, preset_matched, risk_mode, registered_at, status)
+                       VALUES (?,?,?,?,?,?,?,?,?, 'tracking')""",
+                    (
+                        scan_result_id,
+                        scan_id,
+                        ticker,
+                        name,
+                        signal_date,
+                        entry_price,
+                        preset_matched,
+                        risk_mode,
+                        now,
+                    ),
+                    pk="track_id",
+                )
+            except Exception as exc:
+                from sqlalchemy.exc import IntegrityError
+
+                if not isinstance(exc, IntegrityError):
+                    raise
+                existing = fetchone(
+                    conn,
+                    """SELECT track_id FROM signal_tracks
+                       WHERE scan_id=? AND ticker=? AND signal_date=?""",
+                    (scan_id, ticker, signal_date),
+                )
+                track_id = int(existing["track_id"]) if existing else None
+
+        if track_id is None:
+            return None
 
         for horizon, label in ((3, "3日目"), (5, "5日目（1週間）"), (10, "10日目（2週間）")):
-            conn.execute(
-                """INSERT OR IGNORE INTO signal_track_outcomes
-                   (track_id, horizon_days, horizon_label, status)
-                   VALUES (?,?,?, 'pending')""",
-                (track_id, horizon, label),
+            insert_ignore(
+                conn,
+                "signal_track_outcomes",
+                ["track_id", "horizon_days", "horizon_label", "status"],
+                (track_id, horizon, label, "pending"),
+                ["track_id", "horizon_days"],
             )
         return track_id
 
 
 def list_active_signal_tracks(limit: int = 100) -> List[Dict[str, Any]]:
-    with _get_conn() as conn:
-        rows = conn.execute(
+    with connect() as conn:
+        return fetchall(
+            conn,
             """SELECT * FROM signal_tracks
                WHERE status='tracking'
                ORDER BY registered_at DESC
                LIMIT ?""",
             (limit,),
-        ).fetchall()
-    return [dict(r) for r in rows]
+        )
 
 
 def mark_track_completed(track_id: int) -> None:
-    """後方互換: 追跡完了。"""
     mark_track_archived(track_id)
 
 
@@ -455,8 +344,9 @@ def mark_track_archived(
     min_return_pct: Optional[float] = None,
 ) -> None:
     now = datetime.utcnow().isoformat()
-    with _get_conn() as conn:
-        conn.execute(
+    with connect() as conn:
+        execute(
+            conn,
             """UPDATE signal_tracks
                SET status='archived',
                    archived_at=?,
@@ -490,8 +380,9 @@ def update_track_snapshot(
     business_days_elapsed: Optional[int] = None,
 ) -> None:
     now = datetime.utcnow().isoformat()
-    with _get_conn() as conn:
-        conn.execute(
+    with connect() as conn:
+        execute(
+            conn,
             """UPDATE signal_tracks
                SET current_price=?,
                    current_return_pct=?,
@@ -532,14 +423,15 @@ def list_signal_tracks(
         params.append(risk_mode)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(limit)
-    with _get_conn() as conn:
-        rows = conn.execute(
+    with connect() as conn:
+        rows = fetchall(
+            conn,
             f"""SELECT * FROM signal_tracks
                 {where}
                 ORDER BY registered_at DESC
                 LIMIT ?""",
             params,
-        ).fetchall()
+        )
     results = []
     for row in rows:
         data = dict(row)
@@ -550,12 +442,13 @@ def list_signal_tracks(
 
 
 def get_track_outcome(track_id: int, horizon_days: int) -> Optional[Dict[str, Any]]:
-    with _get_conn() as conn:
-        row = conn.execute(
+    with connect() as conn:
+        row = fetchone(
+            conn,
             """SELECT * FROM signal_track_outcomes
                WHERE track_id=? AND horizon_days=?""",
             (track_id, horizon_days),
-        ).fetchone()
+        )
     if not row:
         return None
     data = dict(row)
@@ -578,36 +471,69 @@ def upsert_track_outcome(
     status: str,
 ) -> None:
     now = datetime.utcnow().isoformat()
-    with _get_conn() as conn:
-        conn.execute(
-            """INSERT INTO signal_track_outcomes
-               (track_id, horizon_days, horizon_label, eval_date, exit_price,
-                return_pct, max_return_pct, min_return_pct, is_win, evaluated_at, status)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(track_id, horizon_days) DO UPDATE SET
-                 horizon_label=excluded.horizon_label,
-                 eval_date=excluded.eval_date,
-                 exit_price=excluded.exit_price,
-                 return_pct=excluded.return_pct,
-                 max_return_pct=excluded.max_return_pct,
-                 min_return_pct=excluded.min_return_pct,
-                 is_win=excluded.is_win,
-                 evaluated_at=excluded.evaluated_at,
-                 status=excluded.status""",
-            (
-                track_id,
-                horizon_days,
-                horizon_label,
-                eval_date,
-                exit_price,
-                return_pct,
-                max_return_pct,
-                min_return_pct,
-                int(is_win) if is_win is not None else None,
-                now if status == "complete" else None,
-                status,
-            ),
-        )
+    with connect() as conn:
+        if get_backend() == "postgresql":
+            execute(
+                conn,
+                """INSERT INTO signal_track_outcomes
+                   (track_id, horizon_days, horizon_label, eval_date, exit_price,
+                    return_pct, max_return_pct, min_return_pct, is_win, evaluated_at, status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT (track_id, horizon_days) DO UPDATE SET
+                     horizon_label=EXCLUDED.horizon_label,
+                     eval_date=EXCLUDED.eval_date,
+                     exit_price=EXCLUDED.exit_price,
+                     return_pct=EXCLUDED.return_pct,
+                     max_return_pct=EXCLUDED.max_return_pct,
+                     min_return_pct=EXCLUDED.min_return_pct,
+                     is_win=EXCLUDED.is_win,
+                     evaluated_at=EXCLUDED.evaluated_at,
+                     status=EXCLUDED.status""",
+                (
+                    track_id,
+                    horizon_days,
+                    horizon_label,
+                    eval_date,
+                    exit_price,
+                    return_pct,
+                    max_return_pct,
+                    min_return_pct,
+                    int(is_win) if is_win is not None else None,
+                    now if status == "complete" else None,
+                    status,
+                ),
+            )
+        else:
+            execute(
+                conn,
+                """INSERT INTO signal_track_outcomes
+                   (track_id, horizon_days, horizon_label, eval_date, exit_price,
+                    return_pct, max_return_pct, min_return_pct, is_win, evaluated_at, status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(track_id, horizon_days) DO UPDATE SET
+                     horizon_label=excluded.horizon_label,
+                     eval_date=excluded.eval_date,
+                     exit_price=excluded.exit_price,
+                     return_pct=excluded.return_pct,
+                     max_return_pct=excluded.max_return_pct,
+                     min_return_pct=excluded.min_return_pct,
+                     is_win=excluded.is_win,
+                     evaluated_at=excluded.evaluated_at,
+                     status=excluded.status""",
+                (
+                    track_id,
+                    horizon_days,
+                    horizon_label,
+                    eval_date,
+                    exit_price,
+                    return_pct,
+                    max_return_pct,
+                    min_return_pct,
+                    int(is_win) if is_win is not None else None,
+                    now if status == "complete" else None,
+                    status,
+                ),
+            )
 
 
 def _track_filters_sql(
@@ -634,8 +560,9 @@ def list_track_outcomes(
 ) -> List[Dict[str, Any]]:
     where, params = _track_filters_sql(risk_mode, preset_matched)
     params.append(limit)
-    with _get_conn() as conn:
-        rows = conn.execute(
+    with connect() as conn:
+        rows = fetchall(
+            conn,
             f"""SELECT o.*, t.ticker, t.name, t.signal_date, t.risk_mode, t.preset_matched
                 FROM signal_track_outcomes o
                 JOIN signal_tracks t ON t.track_id = o.track_id
@@ -643,7 +570,7 @@ def list_track_outcomes(
                 ORDER BY t.registered_at DESC, o.horizon_days ASC
                 LIMIT ?""",
             params,
-        ).fetchall()
+        )
     results = []
     for row in rows:
         data = dict(row)
@@ -659,9 +586,10 @@ def count_signal_tracks(
     preset_matched: Optional[str] = None,
 ) -> int:
     where, params = _track_filters_sql(risk_mode, preset_matched)
-    with _get_conn() as conn:
-        row = conn.execute(
+    with connect() as conn:
+        row = fetchone(
+            conn,
             f"SELECT COUNT(*) AS cnt FROM signal_tracks t {where}",
             params,
-        ).fetchone()
+        )
     return int(row["cnt"]) if row else 0

@@ -8,13 +8,12 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from screener.db_path import is_persistent_storage, resolve_db_path
+from screener.database import is_persistent_storage, reset_engine, resolve_database_url
 from screener import storage
 
 
 @contextmanager
 def env_override(**kwargs):
-    """環境変数を一時的に上書きする。"""
     saved = {}
     for key, value in kwargs.items():
         saved[key] = os.environ.get(key)
@@ -23,6 +22,7 @@ def env_override(**kwargs):
         else:
             os.environ[key] = value
     try:
+        reset_engine()
         yield
     finally:
         for key, old in saved.items():
@@ -30,40 +30,43 @@ def env_override(**kwargs):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = old
+        reset_engine()
 
 
-def test_resolve_db_path_explicit_env():
+def test_resolve_database_url_explicit_sqlite():
     with tempfile.TemporaryDirectory() as tmp:
         db_file = Path(tmp) / "custom.db"
-        with env_override(DB_PATH=str(db_file), RENDER=None):
-            assert resolve_db_path() == db_file
+        with env_override(DATABASE_URL=f"sqlite:///{db_file.as_posix()}", RENDER=None):
+            url, backend = resolve_database_url()
+            assert backend == "sqlite"
+            assert url.startswith("sqlite:///")
 
 
-def test_resolve_db_path_render_disk():
-    with tempfile.TemporaryDirectory() as tmp:
-        mount = Path(tmp) / "var_data"
-        mount.mkdir()
-        with env_override(
-            RENDER="true",
-            DB_PATH=None,
-            RENDER_DISK_MOUNT=str(mount),
-        ):
-            assert resolve_db_path() == mount / "screener.db"
-            assert is_persistent_storage(mount / "screener.db") is True
+def test_resolve_database_url_local_fallback():
+    with env_override(DATABASE_URL=None, RENDER=None):
+        url, backend = resolve_database_url()
+        assert backend == "sqlite"
+        assert url.startswith("sqlite:///")
 
 
-def test_resolve_db_path_local_default():
-    with env_override(DB_PATH=None, RENDER=None):
-        path = resolve_db_path()
-        assert path.name == "screener.db"
-        assert "data" in path.parts
-        assert is_persistent_storage(path) is True
+def test_external_database_is_persistent():
+    with env_override(DATABASE_URL="postgresql://user:pass@host/db", RENDER="true"):
+        assert is_persistent_storage() is True
+
+
+def test_render_without_database_url_not_persistent():
+    with env_override(DATABASE_URL=None, RENDER="true"):
+        assert is_persistent_storage() is False
 
 
 def test_signal_tracks_persist_across_reconnect():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         db_file = Path(tmp) / "test_signals.db"
-        with env_override(DB_PATH=str(db_file), RENDER=None, SQLITE_TEST_MODE="1"):
+        with env_override(
+            DATABASE_URL=f"sqlite:///{db_file.as_posix()}",
+            RENDER=None,
+            SQLITE_TEST_MODE="1",
+        ):
             storage.refresh_db_path()
             storage.init_db()
 
@@ -77,7 +80,7 @@ def test_signal_tracks_persist_across_reconnect():
             )
             assert track_id is not None
 
-        with env_override(DB_PATH=None, RENDER=None, SQLITE_TEST_MODE=None):
+        with env_override(DATABASE_URL=None, RENDER=None, SQLITE_TEST_MODE=None):
             storage.refresh_db_path()
 
         with sqlite3.connect(str(db_file)) as conn:
@@ -91,21 +94,19 @@ def test_signal_tracks_persist_across_reconnect():
         assert row[2] == "堅実"
 
 
-def test_ephemeral_render_path_not_persistent():
-    with tempfile.TemporaryDirectory() as tmp:
-        ephemeral = Path(tmp) / "data" / "screener.db"
-        with env_override(
-            RENDER="true",
-            DB_PATH=str(ephemeral),
-            RENDER_DISK_MOUNT="/nonexistent_mount_xyz",
-        ):
-            assert is_persistent_storage(ephemeral) is False
+def test_storage_info_local():
+    with env_override(DATABASE_URL=None, RENDER=None):
+        info = storage.get_storage_info()
+        assert info["backend"] == "sqlite"
+        assert info["db_persistent"] is True
+        assert info["database_url_set"] is False
 
 
 if __name__ == "__main__":
-    test_resolve_db_path_explicit_env()
-    test_resolve_db_path_render_disk()
-    test_resolve_db_path_local_default()
+    test_resolve_database_url_explicit_sqlite()
+    test_resolve_database_url_local_fallback()
+    test_external_database_is_persistent()
+    test_render_without_database_url_not_persistent()
     test_signal_tracks_persist_across_reconnect()
-    test_ephemeral_render_path_not_persistent()
+    test_storage_info_local()
     print("ok")

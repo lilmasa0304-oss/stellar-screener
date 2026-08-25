@@ -37,10 +37,15 @@ copy .env.template .env
 |---|---|
 | `OPENAI_API_KEY` | OpenAI API キー（統合AI診断に必須） |
 | `OPENAI_MODEL` | 使用モデル（デフォルト: `gpt-4o`） |
-| `DB_PATH` | SQLite パス（ローカル既定: `data/screener.db`、Render: `/var/data/screener.db`） |
-| `RENDER_DISK_MOUNT` | Render Persistent Disk マウント（既定: `/var/data`） |
+| `DATABASE_URL` | 外部 DB 接続 URL（Supabase PostgreSQL 等）。未設定時は `data/screener.db` |
+| `DB_PATH` | ローカル SQLite パス（`DATABASE_URL` 未設定時のみ。既定: `data/screener.db`） |
 
-検証リスト（`signal_tracks`）・スキャン履歴・成績データはすべて SQLite に保存されます。Render 本番では `render.yaml` の Persistent Disk（1GB）上に DB を配置するため、再起動・再デプロイ後もデータは保持されます。`/health` の `db_persistent: true` で永続化を確認できます。
+検証リスト（`signal_tracks`）・スキャン履歴・成績データは SQLAlchemy 経由で保存されます。
+
+- **Render 本番（無料）**: [Supabase](https://supabase.com/) 等の無料 PostgreSQL の `DATABASE_URL` を Render Environment に設定
+- **ローカル開発**: `DATABASE_URL` 未設定 → 自動的に `data/screener.db` を使用
+
+`/health` で `db_persistent: true` および `database_url_set: true` を確認できます。
 
 ### 3. 設定ファイル (`config.yaml`)
 
