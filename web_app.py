@@ -1449,6 +1449,7 @@ def dify_probe():
 def health_check():
     """Render / UptimeRobot 等のヘルスチェック用。"""
     cfg = Config("config.yaml")
+    storage_info = storage.get_storage_info()
     return {
         "status":          "ok",
         "platform":        "render" if IS_RENDER else ("vercel" if IS_VERCEL else "local"),
@@ -1464,7 +1465,9 @@ def health_check():
         "scheduler":       "active" if _scheduler_enabled() else "disabled",
         "scheduler_reason": _scheduler_disable_reason(),
         "next_scan_time":  get_next_run_time() if _scheduler_enabled() else None,
-        "db_path":         str(storage.DB_PATH.resolve()),
+        "db_path":         storage_info["db_path"],
+        "db_persistent":   storage_info["db_persistent"],
+        "disk_mount":      storage_info["disk_mount"],
         "diagnosis_cache_ttl_sec": DEFAULT_TTL_SEC,
         "diagnosis_history_days": DEFAULT_HISTORY_DAYS,
         "diagnosis_timeout_sec": DIAGNOSIS_TIMEOUT_SEC,

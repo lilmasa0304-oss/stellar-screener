@@ -10,7 +10,8 @@
 #
 # 無料プラン注意:
 #   - 15分間アクセスがないとスリープします（UptimeRobot 等での定期 ping 推奨）
-#   - SQLite は再起動・再デプロイでリセットされます（永続化は有料 Disk が必要）
+#   - Persistent Disk（本 Blueprint で 1GB）により SQLite / 検証リストは再起動後も保持されます
+#   - Disk 利用には Starter プラン以上が必要です
 
 services:
   - type: web
@@ -23,6 +24,13 @@ services:
     startCommand: uvicorn web_app:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 120 --limit-concurrency 50
     healthCheckPath: /health
 
+    # Persistent Disk: 再起動・再デプロイ後も SQLite（検証リスト含む）を保持
+    # ※ Render の Persistent Disk は有料プラン（Starter 以上）が必要
+    disk:
+      name: stellar-screener-data
+      mountPath: /var/data
+      sizeGB: 1
+
     envVars:
       # Python / 文字コード（runtime.txt と併用可）
       - key: PYTHON_VERSION
@@ -32,9 +40,11 @@ services:
       - key: PYTHONIOENCODING
         value: "utf-8"
 
-      # SQLite（無料プラン: エフェメラル。再起動で消えます）
+      # SQLite — Persistent Disk 上に配置（再起動・再デプロイ後も検証リストを保持）
       - key: DB_PATH
-        value: data/screener.db
+        value: /var/data/screener.db
+      - key: RENDER_DISK_MOUNT
+        value: /var/data
 
       # 定時スキャン: Render 本番ではコード側でも無効化。GitHub Actions 運用を推奨
       - key: DISABLE_SCHEDULER

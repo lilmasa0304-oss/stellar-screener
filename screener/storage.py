@@ -1,34 +1,79 @@
 """
 SQLite ベースの永続化ストレージ。
 
-スキャン結果をファイル（data/screener.db）に保存するため、
-クラウド上でサーバーが再起動してもデータが消えません。
+検証リスト（signal_tracks）・スキャン結果・成績データを SQLite に保存する。
+Render 本番では Persistent Disk（/var/data）+ DB_PATH を使用すること。
 
 テーブル:
-  scan_sessions  — スキャン実行ごとのメタ情報（開始/完了時刻・件数・ステータス）
-  scan_results   — 各銘柄の評価結果
+  scan_sessions       — スキャン実行ごとのメタ情報
+  scan_results        — 各銘柄の評価結果
+  signal_tracks       — フォワードテスト検証リスト
+  signal_track_outcomes — 時点別成績
 """
 
 import json
-import sqlite3
 import logging
+import os
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from screener.db_path import is_persistent_storage, resolve_db_path, resolve_disk_mount
+
 logger = logging.getLogger(__name__)
 
-# SQLite ファイルのパス（環境変数で上書き可能）
-import os
-DB_PATH = Path(os.getenv("DB_PATH", "data/screener.db"))
+DB_PATH: Path = resolve_db_path()
+_storage_warned_ephemeral = False
+
+
+def refresh_db_path() -> Path:
+    """環境変数変更後に DB パスを再解決する（主にテスト用）。"""
+    global DB_PATH
+    DB_PATH = resolve_db_path()
+    return DB_PATH
+
+
+def get_storage_info() -> Dict[str, Any]:
+    """ヘルスチェック・運用確認用のストレージ情報。"""
+    mount = resolve_disk_mount()
+    persistent = is_persistent_storage(DB_PATH)
+    return {
+        "db_path": str(DB_PATH.resolve()),
+        "db_persistent": persistent,
+        "disk_mount": str(mount.resolve()) if mount else None,
+        "platform_render": os.getenv("RENDER") == "true",
+        "platform_vercel": os.getenv("VERCEL") == "1",
+    }
+
+
+def _warn_if_ephemeral() -> None:
+    global _storage_warned_ephemeral
+    if _storage_warned_ephemeral:
+        return
+    if os.getenv("RENDER") == "true" and not is_persistent_storage(DB_PATH):
+        logger.warning(
+            "Render エフェメラルディスク上の DB (%s) を使用中。"
+            "再起動・再デプロイで検証リストが消えます。"
+            "Persistent Disk をマウントし DB_PATH=/var/data/screener.db を設定してください。",
+            DB_PATH.resolve(),
+        )
+        _storage_warned_ephemeral = True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 def _get_conn() -> sqlite3.Connection:
     """スレッドセーフな DB 接続を返す。"""
+    _warn_if_ephemeral()
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    if os.getenv("SQLITE_TEST_MODE") == "1":
+        conn.execute("PRAGMA journal_mode=DELETE")
+    else:
+        conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
@@ -118,7 +163,12 @@ def init_db() -> None:
                 ON signal_track_outcomes(horizon_days);
         """)
         _migrate_signal_tracks(conn)
-    logger.info(f"DB initialized at {DB_PATH.resolve()}")
+    info = get_storage_info()
+    logger.info(
+        "DB initialized at %s (persistent=%s)",
+        info["db_path"],
+        info["db_persistent"],
+    )
 
 
 def _migrate_signal_tracks(conn: sqlite3.Connection) -> None:

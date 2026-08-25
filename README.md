@@ -37,7 +37,10 @@ copy .env.template .env
 |---|---|
 | `OPENAI_API_KEY` | OpenAI API キー（統合AI診断に必須） |
 | `OPENAI_MODEL` | 使用モデル（デフォルト: `gpt-4o`） |
-| `DB_PATH` | SQLite パス（デフォルト: `data/screener.db`） |
+| `DB_PATH` | SQLite パス（ローカル既定: `data/screener.db`、Render: `/var/data/screener.db`） |
+| `RENDER_DISK_MOUNT` | Render Persistent Disk マウント（既定: `/var/data`） |
+
+検証リスト（`signal_tracks`）・スキャン履歴・成績データはすべて SQLite に保存されます。Render 本番では `render.yaml` の Persistent Disk（1GB）上に DB を配置するため、再起動・再デプロイ後もデータは保持されます。`/health` の `db_persistent: true` で永続化を確認できます。
 
 ### 3. 設定ファイル (`config.yaml`)
 
