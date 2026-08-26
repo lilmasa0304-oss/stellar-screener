@@ -60,6 +60,7 @@ from screener.signal_tracker import (
     register_track_from_scan,
 )
 from screener import storage
+from screener.database import get_db_init_error
 from screener.scheduler import start_scheduler, stop_scheduler, get_next_run_time
 from screener.strategy import StrategyEvaluator
 
@@ -123,9 +124,17 @@ def _scheduler_disable_reason() -> str | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 起動時
-    storage.init_db()
-    logger.info("SQLite DB を初期化しました。")
+    # 起動時 — DB 接続失敗でもプロセスは継続（Render status 3 回避）
+    if storage.init_db():
+        logger.info("データベース初期化に成功しました。")
+    else:
+        db_error = get_db_init_error()
+        logger.error(
+            "データベース初期化に失敗しました。スキャン履歴・検証リスト等の DB 機能は"
+            " 利用できません。DATABASE_URL（パスワードの URL エンコード含む）を確認してください。"
+            " detail=%s",
+            db_error,
+        )
 
     if is_dify_configured():
         logger.info(
@@ -1450,8 +1459,9 @@ def health_check():
     """Render / UptimeRobot 等のヘルスチェック用。"""
     cfg = Config("config.yaml")
     storage_info = storage.get_storage_info()
+    db_ok = storage_info.get("db_init_error") is None
     return {
-        "status":          "ok",
+        "status":          "ok" if db_ok else "degraded",
         "platform":        "render" if IS_RENDER else ("vercel" if IS_VERCEL else "local"),
         "openai_configured": False,
         "openai_env_present": False,
@@ -1469,6 +1479,7 @@ def health_check():
         "db_persistent":   storage_info.get("db_persistent"),
         "db_backend":      storage_info.get("backend"),
         "database_url_set": storage_info.get("database_url_set"),
+        "db_init_error":   storage_info.get("db_init_error"),
         "diagnosis_cache_ttl_sec": DEFAULT_TTL_SEC,
         "diagnosis_history_days": DEFAULT_HISTORY_DAYS,
         "diagnosis_timeout_sec": DIAGNOSIS_TIMEOUT_SEC,

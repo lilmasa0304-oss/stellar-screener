@@ -20,14 +20,15 @@ from screener.database import (
     fetchall,
     fetchone,
     get_backend,
+    get_db_init_error,
     get_storage_info,
+    initialize_database_schema,
     insert_ignore,
     insert_returning_id,
     is_persistent_storage,
     reset_engine,
 )
 from screener.db_path import resolve_db_path
-from screener.db_schema import init_schema
 
 logger = logging.getLogger(__name__)
 
@@ -56,17 +57,10 @@ def _warn_if_ephemeral() -> None:
         _storage_warned_ephemeral = True
 
 
-def init_db() -> None:
-    """DB とテーブルを初期化する（初回起動時に呼び出す）。"""
+def init_db() -> bool:
+    """DB とテーブルを初期化する（初回起動時に呼び出す）。失敗時は False。"""
     _warn_if_ephemeral()
-    with connect() as conn:
-        init_schema(conn)
-    info = get_storage_info()
-    logger.info(
-        "DB initialized (backend=%s, persistent=%s)",
-        info.get("backend"),
-        info.get("db_persistent"),
-    )
+    return initialize_database_schema()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
