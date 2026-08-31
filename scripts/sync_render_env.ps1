@@ -103,6 +103,7 @@ Get-Content $EnvFile -Encoding UTF8 | ForEach-Object {
 }
 
 $syncKeys = @(
+    "DATABASE_URL",
     "DIFY_API_KEY",
     "DIFY_API_URL",
     "DIFY_BASE_URL",

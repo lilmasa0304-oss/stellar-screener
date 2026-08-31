@@ -129,7 +129,7 @@ def resolve_database_url() -> Tuple[str, str]:
 
     backend: postgresql | sqlite | libsql
     """
-    explicit = os.getenv("DATABASE_URL", "").strip()
+    explicit = os.getenv("DATABASE_URL", "").strip().strip('"').strip("'")
     if explicit:
         try:
             url = normalize_database_url(explicit)
@@ -169,6 +169,20 @@ def reset_engine() -> None:
     _backend = None
 
 
+def _uses_transaction_pooler(url: str) -> bool:
+    """Supabase PgBouncer transaction mode (port 6543) 等を検出する。"""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    port = parsed.port
+    if port == 6543:
+        return True
+    if "pooler.supabase.com" in host and port in (None, 6543):
+        return True
+    query = parse_qs(parsed.query)
+    pgbouncer = (query.get("pgbouncer") or query.get("pool_mode") or [""])[0].lower()
+    return pgbouncer in ("true", "transaction")
+
+
 def get_engine() -> Engine:
     global _engine
     if _engine is not None:
@@ -178,6 +192,9 @@ def get_engine() -> Engine:
     connect_args: Dict[str, Any] = {}
     if backend == "sqlite":
         connect_args["check_same_thread"] = False
+    elif backend == "postgresql" and _uses_transaction_pooler(url):
+        # Transaction pooler は prepared statements 非対応
+        connect_args["prepare_threshold"] = None
 
     _engine = create_engine(
         url,
@@ -203,7 +220,7 @@ def get_engine() -> Engine:
 
 
 def is_external_database() -> bool:
-    return bool(os.getenv("DATABASE_URL", "").strip())
+    return bool(os.getenv("DATABASE_URL", "").strip().strip('"').strip("'"))
 
 
 def is_persistent_storage() -> bool:
@@ -263,7 +280,7 @@ def initialize_database_schema() -> bool:
     global _db_init_error
     from screener.db_schema import init_schema
 
-    explicit = os.getenv("DATABASE_URL", "").strip()
+    explicit = os.getenv("DATABASE_URL", "").strip().strip('"').strip("'")
     try:
         with connect() as conn:
             init_schema(conn)

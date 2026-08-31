@@ -22,6 +22,9 @@ jobs:
     name: 追跡・株価更新バッチ
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      PYTHONPATH: .
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
     steps:
       - name: リポジトリを取得
@@ -37,8 +40,6 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: DATABASE_URL 確認
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
             echo "::error::secrets.DATABASE_URL が未設定です。GitHub Repo → Settings → Secrets → Actions に追加してください。"
@@ -46,7 +47,8 @@ jobs:
           fi
           echo "DATABASE_URL is set (masked)"
 
+      - name: DATABASE_URL 接続テスト
+        run: python scripts/test_database_connection.py --skip-write-test
+
       - name: 追跡・株価更新バッチ実行
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python scripts/run_tracking_batch.py --limit 500 --summary

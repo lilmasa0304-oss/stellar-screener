@@ -1,6 +1,11 @@
 """DATABASE_URL 正規化のユニットテスト。"""
 
-from screener.database import mask_database_url, normalize_database_url, parse_database_url
+from screener.database import (
+    _uses_transaction_pooler,
+    mask_database_url,
+    normalize_database_url,
+    parse_database_url,
+)
 
 
 def test_password_with_at_sign():
@@ -36,10 +41,18 @@ def test_mask_database_url():
     assert "***" in masked
 
 
+def test_supabase_transaction_pooler_detection():
+    url = normalize_database_url(
+        "postgresql://postgres.abc:pass@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
+    )
+    assert _uses_transaction_pooler(url) is True
+
+
 if __name__ == "__main__":
     test_password_with_at_sign()
     test_password_with_hash_and_percent()
     test_already_encoded_password()
     test_postgres_scheme_alias()
     test_mask_database_url()
+    test_supabase_transaction_pooler_detection()
     print("ok")
