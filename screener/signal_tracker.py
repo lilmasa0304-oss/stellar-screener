@@ -17,7 +17,7 @@ from screener.jp_business_days import (
     today_jst,
 )
 from screener import storage
-from screener.yahoo_session import create_yfinance_ticker
+from screener.yahoo_chart import fetch_history_with_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -81,19 +81,38 @@ def register_manual_track(
 
 
 def _fetch_history_df(ticker: str, start: date, end: date) -> pd.DataFrame:
+    """登録日〜評価日の株価履歴（Chart API / Stooq フォールバック）。"""
     symbol = ticker.strip().upper()
     if not symbol.endswith(".T") and symbol[:-1].isdigit():
         symbol = f"{symbol}.T"
-    fetch_end = end + timedelta(days=5)
-    df = create_yfinance_ticker(symbol).history(
-        start=start.isoformat(),
-        end=fetch_end.isoformat(),
-        interval="1d",
-    )
+
+    span_days = max((end - start).days + 10, 30)
+    if span_days <= 90:
+        period = "3mo"
+    elif span_days <= 180:
+        period = "6mo"
+    else:
+        period = "1y"
+
+    df, _, source = fetch_history_with_fallback(symbol, period=period)
     if df is None or df.empty:
+        logger.warning("追跡評価: 株価履歴なし (%s, source=%s)", symbol, source)
         return pd.DataFrame()
+
     df = df.copy()
     df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+    ts_start = pd.Timestamp(start)
+    ts_end = pd.Timestamp(end + timedelta(days=5))
+    df = df[(df.index >= ts_start) & (df.index <= ts_end)]
+    if df.empty:
+        logger.warning(
+            "追跡評価: 期間フィルタ後にデータなし (%s %s〜%s)",
+            symbol,
+            start.isoformat(),
+            end.isoformat(),
+        )
+    else:
+        logger.debug("追跡評価: %s 取得 %d 行 (source=%s)", symbol, len(df), source)
     return df.sort_index()
 
 
@@ -253,9 +272,23 @@ def evaluate_track(track: Dict[str, Any]) -> int:
 def evaluate_pending_tracks(limit: int = 100) -> Dict[str, int]:
     """未評価の追跡レコードを評価する。"""
     tracks = storage.list_active_signal_tracks(limit=limit)
+    logger.info("追跡評価開始: active_tracks=%d limit=%d", len(tracks), limit)
     updated = 0
     for track in tracks:
-        updated += evaluate_track(track)
+        try:
+            updated += evaluate_track(track)
+        except Exception as exc:
+            logger.exception(
+                "追跡評価失敗 track_id=%s ticker=%s: %s",
+                track.get("track_id"),
+                track.get("ticker"),
+                exc,
+            )
+    logger.info(
+        "追跡評価完了: tracks_checked=%d outcomes_updated=%d",
+        len(tracks),
+        updated,
+    )
     return {"tracks_checked": len(tracks), "outcomes_updated": updated}
 
 

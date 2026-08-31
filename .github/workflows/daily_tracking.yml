@@ -1,28 +1,27 @@
 # ──────────────────────────────────────────────────────────────────────────
-# STELLAR SCREENER — GitHub Actions 定時スキャン（CLI / DB 保存のみ）
+# STELLAR SCREENER — 日次フォワードテスト追跡（株価更新・成績評価）
 #
-# 毎平日 07:00 UTC = 16:00 JST に JPX400 スキャンを自動実行し、
-# 結果を DATABASE_URL（Supabase 等）に保存します。
+# 毎平日 17:30 JST (= 08:30 UTC) に Supabase (DATABASE_URL) 上の
+# signal_tracks を評価し、現在株価・horizon 成績・10営業日確定を更新します。
 #
-# 必須シークレット: DATABASE_URL（Render 本番と同じ Supabase URI）
-#
-# 手動スキャンは Web ダッシュボード（web_app.py）を使用してください。
+# 必須シークレット:
+#   DATABASE_URL — Supabase PostgreSQL 接続 URI（Render 本番と同じ値）
 # ──────────────────────────────────────────────────────────────────────────
 
-name: 📈 JPX400 Daily Screener (16:00 JST)
+name: 📊 Daily Tracking Evaluation (17:30 JST)
 
 on:
   schedule:
-    # 毎平日 07:00 UTC = 16:00 JST
-    - cron: "0 7 * * 1-5"
+    # 毎平日 08:30 UTC = 17:30 JST（大引け後）
+    - cron: "30 8 * * 1-5"
 
   workflow_dispatch:
 
 jobs:
-  screen:
-    name: 株式スクリーニング実行
+  evaluate-tracks:
+    name: 追跡・株価更新バッチ
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
 
     steps:
       - name: リポジトリを取得
@@ -42,19 +41,12 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
-            echo "::warning::secrets.DATABASE_URL 未設定 — エフェメラル SQLite に保存されます（本番DBとは別）"
+            echo "::error::secrets.DATABASE_URL が未設定です。GitHub Repo → Settings → Secrets → Actions に追加してください。"
+            exit 1
           fi
+          echo "DATABASE_URL is set (masked)"
 
-      - name: JPX400 スクリーニング実行
+      - name: 追跡・株価更新バッチ実行
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python main.py --jpx400
-
-      - name: スキャン結果を保存
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: screener-db-${{ github.run_id }}
-          path: data/screener.db
-          retention-days: 30
-          if-no-files-found: ignore
+        run: python scripts/run_tracking_batch.py --limit 500 --summary

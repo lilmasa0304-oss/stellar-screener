@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv(override=False)
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -832,12 +832,26 @@ def get_tracking_summary(
         raise HTTPException(status_code=500, detail=f"追跡サマリーの取得に失敗: {e}") from e
 
 
+def _verify_cron_secret(x_cron_secret: Optional[str] = None) -> None:
+    """CRON_SECRET 設定時は外部バッチ呼び出しを保護する。"""
+    expected = os.getenv("CRON_SECRET", "").strip()
+    if expected and x_cron_secret != expected:
+        raise HTTPException(status_code=401, detail="Invalid cron secret")
+
+
 @app.post("/api/tracking/evaluate")
-def evaluate_tracking(limit: int = 100):
-    """未評価の追跡シグナルを手動評価する。"""
+@app.get("/api/tracking/evaluate")
+def evaluate_tracking(
+    limit: int = 500,
+    x_cron_secret: Optional[str] = Header(None, alias="X-Cron-Secret"),
+):
+    """未評価の追跡シグナルを評価する（手動 / CRON / GitHub Actions から呼び出し可）。"""
+    _verify_cron_secret(x_cron_secret)
     try:
-        return evaluate_pending_tracks(limit=limit)
+        result = evaluate_pending_tracks(limit=limit)
+        return {"status": "success", **result}
     except Exception as e:
+        logger.exception("追跡評価に失敗: %s", e)
         raise HTTPException(status_code=500, detail=f"追跡評価に失敗: {e}") from e
 
 
