@@ -8,8 +8,8 @@
 #   DATABASE_URL — Supabase PostgreSQL 接続 URI（Render 本番と同じ値で可）
 #
 # 任意:
-#   SUPABASE_POOLER_REGION — pooler リージョン（既定: ap-northeast-1）
-#   GitHub Actions では IPv4 の session pooler へ自動変換されます
+#   DATABASE_URL_RAW=1 — Supabase URL 自動変換を無効化（secrets の URL をそのまま使用）
+#   SUPABASE_URL_FALLBACK=1 — raw 失敗時に自動変換で再試行
 # ──────────────────────────────────────────────────────────────────────────
 
 name: 📊 Daily Tracking Evaluation (17:30 JST)
@@ -29,6 +29,8 @@ jobs:
     env:
       PYTHONPATH: .
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DATABASE_URL_RAW: "1"
+      SUPABASE_URL_FALLBACK: "1"
 
     steps:
       - name: リポジトリを取得
@@ -52,7 +54,7 @@ jobs:
           echo "DATABASE_URL is set (masked)"
 
       - name: DATABASE_URL 接続テスト
-        run: python scripts/test_database_connection.py --skip-write-test
+        run: python scripts/test_database_connection.py --skip-write-test --raw --fallback-rewrite
 
       - name: 追跡・株価更新バッチ実行
         run: python scripts/run_tracking_batch.py --limit 500 --summary

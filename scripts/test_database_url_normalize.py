@@ -2,6 +2,8 @@
 
 from screener.database import (
     _uses_transaction_pooler,
+    get_database_url_mode,
+    is_supabase_url_rewrite_enabled,
     mask_database_url,
     normalize_database_url,
     parse_database_url,
@@ -86,6 +88,32 @@ def test_supabase_transaction_pooler_downgraded_in_github_actions():
             os.environ["GITHUB_ACTIONS"] = old
 
 
+def test_database_url_raw_skips_supabase_rewrite():
+    import os
+
+    old_raw = os.environ.get("DATABASE_URL_RAW")
+    old_gha = os.environ.get("GITHUB_ACTIONS")
+    os.environ["DATABASE_URL_RAW"] = "1"
+    os.environ["GITHUB_ACTIONS"] = "true"
+    try:
+        assert is_supabase_url_rewrite_enabled() is False
+        assert get_database_url_mode() == "raw"
+        url = normalize_database_url(
+            "postgresql://postgres:secret@db.myref.supabase.co:5432/postgres"
+        )
+        assert "pooler.supabase.com" not in url
+        assert "db.myref.supabase.co" in url
+    finally:
+        if old_raw is None:
+            os.environ.pop("DATABASE_URL_RAW", None)
+        else:
+            os.environ["DATABASE_URL_RAW"] = old_raw
+        if old_gha is None:
+            os.environ.pop("GITHUB_ACTIONS", None)
+        else:
+            os.environ["GITHUB_ACTIONS"] = old_gha
+
+
 if __name__ == "__main__":
     test_password_with_at_sign()
     test_password_with_hash_and_percent()
@@ -95,4 +123,5 @@ if __name__ == "__main__":
     test_supabase_transaction_pooler_detection()
     test_supabase_direct_url_upgraded_for_github_actions()
     test_supabase_transaction_pooler_downgraded_in_github_actions()
+    test_database_url_raw_skips_supabase_rewrite()
     print("ok")

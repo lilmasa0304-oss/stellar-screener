@@ -108,7 +108,26 @@ def _extract_supabase_project_ref(url: str) -> Optional[str]:
     return env_ref or None
 
 
+def is_supabase_url_rewrite_enabled() -> bool:
+    """
+    Supabase URL 自動変換を有効にするか。
+
+    DATABASE_URL_RAW=1 または SUPABASE_SKIP_URL_REWRITE=1 で無効化（URL をそのまま使用）。
+    """
+    for key in ("DATABASE_URL_RAW", "SUPABASE_SKIP_URL_REWRITE"):
+        if os.getenv(key, "").strip().lower() in ("1", "true", "yes"):
+            return False
+    return True
+
+
+def get_database_url_mode() -> str:
+    """接続 URL モード（ログ用）: raw | rewrite"""
+    return "raw" if not is_supabase_url_rewrite_enabled() else "rewrite"
+
+
 def _should_use_supabase_pooler() -> bool:
+    if not is_supabase_url_rewrite_enabled():
+        return False
     if os.getenv("SUPABASE_USE_POOLER", "").lower() in ("1", "true", "yes"):
         return True
     return os.getenv("GITHUB_ACTIONS") == "true"
@@ -122,6 +141,9 @@ def _normalize_supabase_url(url: str) -> str:
     - Supavisor: username `postgres` → `postgres.<project-ref>`
     - Transaction pooler (6543): pgbouncer=true を付与
     """
+    if not is_supabase_url_rewrite_enabled():
+        return url
+
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
     if not host or "supabase.co" not in host:
@@ -197,7 +219,8 @@ def normalize_database_url(raw: str) -> str:
 
     if "postgresql" in url:
         url = _fix_postgres_credentials(url)
-        url = _normalize_supabase_url(url)
+        if is_supabase_url_rewrite_enabled():
+            url = _normalize_supabase_url(url)
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
         query.setdefault("sslmode", ["require"])

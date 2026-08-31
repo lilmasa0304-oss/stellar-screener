@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sys
+import traceback
 from pathlib import Path
 
 # GitHub Actions 等で `python scripts/run_tracking_batch.py` 実行時も
@@ -39,36 +40,46 @@ def main() -> int:
         )
         return 1
 
-    from screener import storage
-    from screener.database import get_db_init_error, mask_database_url
-    from screener.signal_tracker import build_tracking_summary, evaluate_pending_tracks
-
-    info = storage.get_storage_info()
-    logger.info("storage info: %s", json.dumps(info, ensure_ascii=False))
-    logger.info("DATABASE_URL (masked): %s", mask_database_url(database_url))
-
-    if not storage.init_db():
-        detail = get_db_init_error() or "unknown"
-        logger.error(
-            "DB 初期化に失敗しました。DATABASE_URL・Supabase ネットワーク設定を確認してください。"
-            " error=%s",
-            detail,
+    try:
+        from screener import storage
+        from screener.database import (
+            get_database_url_mode,
+            get_db_init_error,
+            mask_database_url,
         )
+        from screener.signal_tracker import build_tracking_summary, evaluate_pending_tracks
+
+        info = storage.get_storage_info()
+        logger.info("storage info: %s", json.dumps(info, ensure_ascii=False))
+        logger.info("DATABASE_URL mode: %s", get_database_url_mode())
+        logger.info("DATABASE_URL (masked): %s", mask_database_url(database_url))
+
+        if not storage.init_db():
+            detail = get_db_init_error() or "unknown"
+            logger.error(
+                "DB 初期化に失敗しました。DATABASE_URL・Supabase ネットワーク設定を確認してください。"
+                " error=%s",
+                detail,
+            )
+            return 1
+
+        result = evaluate_pending_tracks(limit=args.limit)
+        logger.info(
+            "追跡評価完了: tracks_checked=%s outcomes_updated=%s",
+            result.get("tracks_checked"),
+            result.get("outcomes_updated"),
+        )
+
+        if args.summary:
+            summary = build_tracking_summary(auto_evaluate=False)
+            logger.info("summary: %s", json.dumps(summary, ensure_ascii=False, indent=2))
+
+        print(json.dumps({"status": "success", **result}, ensure_ascii=False))
+        return 0
+    except Exception as exc:
+        logger.error("追跡バッチ実行中に例外: %s", exc)
+        logger.error("traceback:\n%s", traceback.format_exc())
         return 1
-
-    result = evaluate_pending_tracks(limit=args.limit)
-    logger.info(
-        "追跡評価完了: tracks_checked=%s outcomes_updated=%s",
-        result.get("tracks_checked"),
-        result.get("outcomes_updated"),
-    )
-
-    if args.summary:
-        summary = build_tracking_summary(auto_evaluate=False)
-        logger.info("summary: %s", json.dumps(summary, ensure_ascii=False, indent=2))
-
-    print(json.dumps({"status": "success", **result}, ensure_ascii=False))
-    return 0
 
 
 if __name__ == "__main__":
