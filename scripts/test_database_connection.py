@@ -26,7 +26,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    database_url = (args.url or os.getenv("DATABASE_URL", "")).strip()
+    database_url = (args.url or os.getenv("DATABASE_URL", "")).strip().strip('"').strip("'")
     if not database_url:
         print("ERROR: DATABASE_URL が未設定です。", file=sys.stderr)
         return 1
@@ -37,32 +37,43 @@ def main() -> int:
         connect,
         fetchone,
         get_backend,
+        get_db_init_error,
         get_storage_info,
         reset_engine,
         resolve_database_url,
     )
     from screener import storage
 
-    reset_engine()
-    storage.refresh_db_path()
+    try:
+        reset_engine()
+        storage.refresh_db_path()
 
-    url, backend = resolve_database_url()
-    info = get_storage_info()
-    print(f"[1/4] backend={backend}")
-    print(f"      persistent={info.get('db_persistent')}")
-    print(f"      url={info.get('database_url_masked') or url}")
+        url, backend = resolve_database_url()
+        info = get_storage_info()
+        print(f"[1/4] backend={backend}")
+        print(f"      persistent={info.get('db_persistent')}")
+        print(f"      url={info.get('database_url_masked') or url}")
 
-    print("[2/4] 接続確認...")
-    with connect() as conn:
-        row = fetchone(conn, "SELECT 1 AS ok")
-        if not row or row.get("ok") != 1:
-            print("ERROR: SELECT 1 が失敗しました。", file=sys.stderr)
+        print("[2/4] 接続確認...")
+        with connect() as conn:
+            row = fetchone(conn, "SELECT 1 AS ok")
+            if not row or row.get("ok") != 1:
+                print("ERROR: SELECT 1 が失敗しました。", file=sys.stderr)
+                return 1
+        print("      OK")
+
+        print("[3/4] スキーマ初期化...")
+        if not storage.init_db():
+            detail = get_db_init_error() or "unknown"
+            print(f"ERROR: スキーマ初期化に失敗しました: {detail}", file=sys.stderr)
             return 1
-    print("      OK")
-
-    print("[3/4] スキーマ初期化...")
-    storage.init_db()
-    print("      OK")
+        print("      OK")
+    except Exception as exc:
+        print(f"ERROR: DATABASE_URL 接続テスト中に例外: {exc}", file=sys.stderr)
+        detail = get_db_init_error()
+        if detail:
+            print(f"       db_init_error={detail}", file=sys.stderr)
+        return 1
 
     if args.skip_write_test:
         print("[4/4] 書き込みテスト: スキップ")

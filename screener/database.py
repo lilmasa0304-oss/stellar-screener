@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, quote_plus, unquote_plus, urlencode, urlparse
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Connection, Engine, Result
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import NullPool
 
 from screener.db_path import resolve_db_path
 
@@ -90,9 +91,102 @@ def _fix_postgres_credentials(url: str) -> str:
     return prefix + _encode_userinfo(username, password) + "@" + location
 
 
+def _extract_supabase_project_ref(url: str) -> Optional[str]:
+    """Supabase project ref を URL または環境変数から取得する。"""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host.startswith("db.") and host.endswith(".supabase.co"):
+        parts = host.split(".")
+        if len(parts) >= 2 and parts[1]:
+            return parts[1]
+
+    username = unquote_plus(parsed.username or "")
+    if username.startswith("postgres.") and len(username) > len("postgres."):
+        return username.split(".", 1)[1]
+
+    env_ref = os.getenv("SUPABASE_PROJECT_REF", "").strip()
+    return env_ref or None
+
+
+def _should_use_supabase_pooler() -> bool:
+    if os.getenv("SUPABASE_USE_POOLER", "").lower() in ("1", "true", "yes"):
+        return True
+    return os.getenv("GITHUB_ACTIONS") == "true"
+
+
+def _normalize_supabase_url(url: str) -> str:
+    """
+    Supabase 接続 URL を用途に合わせて補正する。
+
+    - GitHub Actions 等 IPv4 環境: db.*.supabase.co 直接接続 → session pooler (5432)
+    - Supavisor: username `postgres` → `postgres.<project-ref>`
+    - Transaction pooler (6543): pgbouncer=true を付与
+    """
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if not host or "supabase.co" not in host:
+        return url
+
+    ref = _extract_supabase_project_ref(url)
+    region = os.getenv("SUPABASE_POOLER_REGION", "ap-northeast-1").strip()
+    username = unquote_plus(parsed.username or "")
+    password = parsed.password or ""
+    port = parsed.port or 5432
+    database = (parsed.path or "/postgres").lstrip("/") or "postgres"
+    query = parse_qs(parsed.query)
+    changed = False
+
+    pooler_host = f"aws-0-{region}.pooler.supabase.com"
+
+    if (
+        host.startswith("db.")
+        and host.endswith(".supabase.co")
+        and _should_use_supabase_pooler()
+        and ref
+    ):
+        pool_user = username if username.startswith("postgres.") else f"postgres.{ref}"
+        userinfo = _encode_userinfo(pool_user, password)
+        netloc = f"{userinfo}@{pooler_host}:5432"
+        logger.info(
+            "Supabase direct URL を session pooler に変換 (%s -> %s:5432)",
+            host,
+            pooler_host,
+        )
+        parsed = parsed._replace(netloc=netloc, path=f"/{database}")
+        query.pop("pgbouncer", None)
+        changed = True
+    elif (
+        "pooler.supabase.com" in host
+        and port == 6543
+        and _should_use_supabase_pooler()
+        and ref
+    ):
+        pool_user = username if username.startswith("postgres.") else f"postgres.{ref}"
+        userinfo = _encode_userinfo(pool_user, password)
+        netloc = f"{userinfo}@{host}:5432"
+        logger.info(
+            "Supabase transaction pooler (6543) を session pooler (5432) に変換"
+        )
+        parsed = parsed._replace(netloc=netloc)
+        query.pop("pgbouncer", None)
+        changed = True
+    elif "pooler.supabase.com" in host and username == "postgres" and ref:
+        userinfo = _encode_userinfo(f"postgres.{ref}", password)
+        netloc = f"{userinfo}@{host}:{port}"
+        logger.info("Supabase pooler username を postgres.%s に修正", ref)
+        parsed = parsed._replace(netloc=netloc)
+        changed = True
+
+    if not changed:
+        return url
+
+    query_str = urlencode({k: v[0] for k, v in query.items()}) if query else ""
+    return urlunparse(parsed._replace(query=query_str))
+
+
 def normalize_database_url(raw: str) -> str:
     """Supabase / Render 形式の URL を SQLAlchemy 用に正規化する。"""
-    url = raw.strip()
+    url = raw.strip().strip('"').strip("'")
     if url.startswith("postgres://"):
         url = "postgresql+psycopg2://" + url[len("postgres://") :]
     elif url.startswith("postgresql://") and "+psycopg2" not in url:
@@ -103,13 +197,15 @@ def normalize_database_url(raw: str) -> str:
 
     if "postgresql" in url:
         url = _fix_postgres_credentials(url)
-        if "sslmode=" not in url:
-            parsed = urlparse(url)
-            query = parse_qs(parsed.query)
-            query.setdefault("sslmode", ["require"])
-            url = urlunparse(
-                parsed._replace(query=urlencode({k: v[0] for k, v in query.items()}))
-            )
+        url = _normalize_supabase_url(url)
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        query.setdefault("sslmode", ["require"])
+        if _uses_transaction_pooler(url):
+            query.setdefault("pgbouncer", ["true"])
+        url = urlunparse(
+            parsed._replace(query=urlencode({k: v[0] for k, v in query.items()}))
+        )
     return url
 
 
@@ -196,10 +292,16 @@ def get_engine() -> Engine:
         # Transaction pooler は prepared statements 非対応
         connect_args["prepare_threshold"] = None
 
+    engine_kwargs: Dict[str, Any] = {
+        "pool_pre_ping": True,
+        "connect_args": connect_args,
+    }
+    if backend == "postgresql" and _uses_transaction_pooler(url):
+        engine_kwargs["poolclass"] = NullPool
+
     _engine = create_engine(
         url,
-        pool_pre_ping=True,
-        connect_args=connect_args,
+        **engine_kwargs,
     )
 
     if backend == "sqlite":

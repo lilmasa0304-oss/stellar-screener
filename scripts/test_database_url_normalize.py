@@ -46,6 +46,44 @@ def test_supabase_transaction_pooler_detection():
         "postgresql://postgres.abc:pass@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
     )
     assert _uses_transaction_pooler(url) is True
+    assert "pgbouncer=true" in url
+
+
+def test_supabase_direct_url_upgraded_for_github_actions():
+    import os
+
+    old = os.environ.get("GITHUB_ACTIONS")
+    os.environ["GITHUB_ACTIONS"] = "true"
+    try:
+        url = normalize_database_url(
+            "postgresql://postgres:secret@db.myref.supabase.co:5432/postgres"
+        )
+        assert "pooler.supabase.com" in url
+        assert "postgres.myref" in url
+        assert ":5432/" in url
+    finally:
+        if old is None:
+            os.environ.pop("GITHUB_ACTIONS", None)
+        else:
+            os.environ["GITHUB_ACTIONS"] = old
+
+
+def test_supabase_transaction_pooler_downgraded_in_github_actions():
+    import os
+
+    old = os.environ.get("GITHUB_ACTIONS")
+    os.environ["GITHUB_ACTIONS"] = "true"
+    try:
+        url = normalize_database_url(
+            "postgresql://postgres.myref:secret@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
+        )
+        assert ":5432/" in url
+        assert "pgbouncer=true" not in url
+    finally:
+        if old is None:
+            os.environ.pop("GITHUB_ACTIONS", None)
+        else:
+            os.environ["GITHUB_ACTIONS"] = old
 
 
 if __name__ == "__main__":
@@ -55,4 +93,6 @@ if __name__ == "__main__":
     test_postgres_scheme_alias()
     test_mask_database_url()
     test_supabase_transaction_pooler_detection()
+    test_supabase_direct_url_upgraded_for_github_actions()
+    test_supabase_transaction_pooler_downgraded_in_github_actions()
     print("ok")

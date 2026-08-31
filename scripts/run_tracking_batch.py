@@ -31,7 +31,7 @@ def main() -> int:
     parser.add_argument("--summary", action="store_true", help="評価後にサマリーを出力")
     args = parser.parse_args()
 
-    database_url = os.getenv("DATABASE_URL", "").strip()
+    database_url = os.getenv("DATABASE_URL", "").strip().strip('"').strip("'")
     if not database_url:
         logger.error(
             "DATABASE_URL が未設定です。"

@@ -5,7 +5,11 @@
 # signal_tracks を評価し、現在株価・horizon 成績・10営業日確定を更新します。
 #
 # 必須シークレット:
-#   DATABASE_URL — Supabase PostgreSQL 接続 URI（Render 本番と同じ値）
+#   DATABASE_URL — Supabase PostgreSQL 接続 URI（Render 本番と同じ値で可）
+#
+# 任意:
+#   SUPABASE_POOLER_REGION — pooler リージョン（既定: ap-northeast-1）
+#   GitHub Actions では IPv4 の session pooler へ自動変換されます
 # ──────────────────────────────────────────────────────────────────────────
 
 name: 📊 Daily Tracking Evaluation (17:30 JST)
