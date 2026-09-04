@@ -541,6 +541,67 @@
             return (raw || '').normalize('NFKC').trim();
         }
 
+        /** API レスポンスを安全に JSON 化（Safari の JSON.parse エラー回避） */
+        async function fetchJsonSafe(url, options = {}) {
+            const response = await fetch(url, options);
+            const text = await response.text();
+            let data = null;
+            if (text) {
+                try {
+                    data = JSON.parse(text);
+                } catch (parseError) {
+                    const snippet = text.replace(/\s+/g, ' ').slice(0, 120);
+                    throw new Error(
+                        `JSON解析失敗 (${response.status}): ${parseError.message} / ${snippet}`
+                    );
+                }
+            }
+            if (!response.ok) {
+                const detail = data?.detail ?? data?.message ?? `HTTP ${response.status}`;
+                throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+            }
+            return data ?? {};
+        }
+
+        /** 追跡 API の空レスポンス用フォールバック */
+        function emptyTrackingDashboard() {
+            return {
+                status: 'success',
+                active_count: 0,
+                archived_count: 0,
+                tracking_period_business_days: 10,
+                mode_comparison: { modes: [], best_mode: null },
+                tracks: [],
+            };
+        }
+
+        function emptyTrackingSummary() {
+            return { status: 'success', horizons: [], total_registered: 0 };
+        }
+
+        function normalizeTrackingDashboard(raw) {
+            if (!raw || typeof raw !== 'object') return emptyTrackingDashboard();
+            return {
+                status: raw.status === 'success' ? 'success' : 'success',
+                active_count: Number(raw.active_count) || 0,
+                archived_count: Number(raw.archived_count) || 0,
+                tracking_period_business_days: Number(raw.tracking_period_business_days) || 10,
+                mode_comparison: raw.mode_comparison && typeof raw.mode_comparison === 'object'
+                    ? raw.mode_comparison
+                    : { modes: [], best_mode: null },
+                tracks: Array.isArray(raw.tracks) ? raw.tracks : [],
+            };
+        }
+
+        function normalizeTrackingSummary(raw) {
+            if (!raw || typeof raw !== 'object') return emptyTrackingSummary();
+            return {
+                status: 'success',
+                horizons: Array.isArray(raw.horizons) ? raw.horizons : [],
+                total_registered: Number(raw.total_registered) || 0,
+            };
+        }
+
         function isJpStockCode(token) {
             const value = (token || '').toUpperCase();
             return JP_STOCK_CODE.test(value) && /\d/.test(value);
@@ -843,6 +904,7 @@
             }
 
             filtered.forEach((row) => {
+                if (!row || typeof row !== 'object') return;
                 const tr = document.createElement('tr');
                 tr.className = 'hover:bg-slate-900/40';
                 const code = displayTickerCode(row.ticker || '');
@@ -875,6 +937,7 @@
                 return;
             }
             horizons.forEach((row) => {
+                if (!row || typeof row !== 'object') return;
                 const tr = document.createElement('tr');
                 tr.className = 'hover:bg-slate-900/40';
                 tr.innerHTML = `
@@ -894,27 +957,39 @@
             if (!metaEl) return;
 
             if (modeLabel) modeLabel.textContent = selectedRiskMode;
-            metaEl.textContent = '検証データを更新中...';
+            metaEl.textContent = forceEvaluate ? '株価・成績を評価中...' : '検証データを読み込み中...';
 
             try {
-                const dashboardUrl = `/api/tracking/dashboard?auto_evaluate=${forceEvaluate ? 'true' : 'true'}`;
-                const summaryUrl = `/api/tracking/summary?risk_mode=${encodeURIComponent(selectedRiskMode)}&auto_evaluate=false`;
-                const [dashboard, summary] = await Promise.all([
-                    fetch(dashboardUrl).then((r) => r.json()),
-                    fetch(summaryUrl).then((r) => r.json()),
-                ]);
-
-                if (!dashboard || dashboard.status !== 'success') {
-                    throw new Error('ダッシュボードデータの形式が不正です');
+                if (forceEvaluate) {
+                    try {
+                        await fetchJsonSafe('/api/tracking/evaluate', { method: 'POST' });
+                    } catch (evaluateError) {
+                        console.warn('追跡評価 API 失敗（表示は続行）:', evaluateError);
+                    }
                 }
 
+                const summaryUrl =
+                    `/api/tracking/summary?risk_mode=${encodeURIComponent(selectedRiskMode)}&auto_evaluate=false`;
+                const [dashboardRaw, summaryRaw] = await Promise.all([
+                    fetchJsonSafe('/api/tracking/dashboard?auto_evaluate=false'),
+                    fetchJsonSafe(summaryUrl),
+                ]);
+
+                const dashboard = normalizeTrackingDashboard(dashboardRaw);
+                const summary = normalizeTrackingSummary(summaryRaw);
+
                 metaEl.textContent =
-                    `追跡中 ${dashboard.active_count || 0} 件 / 検証完了 ${dashboard.archived_count || 0} 件 / 最大${dashboard.tracking_period_business_days || 10}営業日`;
+                    `追跡中 ${dashboard.active_count} 件 / 検証完了 ${dashboard.archived_count} 件 / 最大${dashboard.tracking_period_business_days}営業日`;
 
                 renderModeComparisonCards(dashboard.mode_comparison);
-                renderTrackingTracks(dashboard.tracks || []);
-                renderHorizonSummary(summary?.horizons || []);
+                renderTrackingTracks(dashboard.tracks);
+                renderHorizonSummary(summary.horizons);
+
+                if (dashboard.tracks.length === 0 && summary.total_registered === 0) {
+                    metaEl.textContent += ' — 検証データはまだありません';
+                }
             } catch (error) {
+                console.error('検証データ取得エラー:', error);
                 metaEl.textContent = `検証データの取得に失敗しました: ${error.message}`;
                 renderModeComparisonCards({ modes: [] });
                 renderTrackingTracks([]);

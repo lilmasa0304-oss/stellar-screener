@@ -783,7 +783,7 @@ def get_scan_results(scan_id: str, buy_signal_only: bool = False):
 def get_tracking_dashboard(auto_evaluate: bool = True):
     """フォワードテスト追跡ダッシュボード（モード別比較・銘柄一覧）。"""
     try:
-        return build_forward_test_dashboard(auto_evaluate=auto_evaluate)
+        return _json_safe(build_forward_test_dashboard(auto_evaluate=auto_evaluate))
     except Exception as e:
         logger.exception("検証ダッシュボード取得失敗: %s", e)
         raise HTTPException(status_code=500, detail=f"検証ダッシュボードの取得に失敗: {e}") from e
@@ -822,10 +822,12 @@ def get_tracking_summary(
 ):
     """3/5/10営業日目の勝率・平均損益率・最高益達成率を比較集計する。"""
     try:
-        return build_tracking_summary(
-            risk_mode=risk_mode,
-            preset_matched=preset_matched,
-            auto_evaluate=auto_evaluate,
+        return _json_safe(
+            build_tracking_summary(
+                risk_mode=risk_mode,
+                preset_matched=preset_matched,
+                auto_evaluate=auto_evaluate,
+            )
         )
     except Exception as e:
         logger.exception("追跡サマリー取得失敗: %s", e)
@@ -882,6 +884,34 @@ def _safe_float(value: Any, fallback: Optional[float] = None) -> Optional[float]
         return num
     except (TypeError, ValueError):
         return fallback
+
+
+def _json_safe(value: Any) -> Any:
+    """API レスポンス用に NaN/Inf・日付型を JSON 安全な値へ正規化する。"""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            return str(value)
+    if hasattr(value, "item"):
+        return _json_safe(value.item())
+    return value
 
 
 def _last_valid_close(df) -> Optional[float]:
