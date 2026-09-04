@@ -44,11 +44,64 @@ def test_mask_database_url():
 
 
 def test_supabase_transaction_pooler_detection():
-    url = normalize_database_url(
-        "postgresql://postgres.abc:pass@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
-    )
-    assert _uses_transaction_pooler(url) is True
-    assert "pgbouncer=true" in url
+    import os
+
+    old = os.environ.get("DATABASE_URL_RAW")
+    os.environ["DATABASE_URL_RAW"] = "1"
+    try:
+        url = normalize_database_url(
+            "postgresql://postgres.abc:pass@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
+        )
+        assert _uses_transaction_pooler(url) is True
+        assert "pgbouncer" not in url.lower()
+    finally:
+        if old is None:
+            os.environ.pop("DATABASE_URL_RAW", None)
+        else:
+            os.environ["DATABASE_URL_RAW"] = old
+
+
+def test_pgbouncer_query_param_is_stripped():
+    import os
+
+    old = os.environ.get("DATABASE_URL_RAW")
+    os.environ["DATABASE_URL_RAW"] = "1"
+    try:
+        url = normalize_database_url(
+            "postgresql://postgres:pass@db.example.supabase.co:5432/postgres?pgbouncer=true&sslmode=require"
+        )
+        assert "pgbouncer" not in url.lower()
+        assert "sslmode=require" in url
+        assert _uses_transaction_pooler(url) is False
+    finally:
+        if old is None:
+            os.environ.pop("DATABASE_URL_RAW", None)
+        else:
+            os.environ["DATABASE_URL_RAW"] = old
+
+
+def test_direct_and_pooler_ports_both_normalize():
+    import os
+
+    old = os.environ.get("DATABASE_URL_RAW")
+    os.environ["DATABASE_URL_RAW"] = "1"
+    try:
+        direct = normalize_database_url(
+            "postgresql://postgres:pass@db.example.supabase.co:5432/postgres"
+        )
+        pooler = normalize_database_url(
+            "postgresql://postgres.example:pass@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true"
+        )
+        assert ":5432/" in direct
+        assert ":6543/" in pooler
+        assert "pgbouncer" not in pooler.lower()
+        assert _uses_transaction_pooler(direct) is False
+        assert _uses_transaction_pooler(pooler) is True
+    finally:
+        if old is None:
+            os.environ.pop("DATABASE_URL_RAW", None)
+        else:
+            os.environ["DATABASE_URL_RAW"] = old
 
 
 def test_supabase_direct_url_upgraded_for_github_actions():
@@ -121,6 +174,8 @@ if __name__ == "__main__":
     test_postgres_scheme_alias()
     test_mask_database_url()
     test_supabase_transaction_pooler_detection()
+    test_pgbouncer_query_param_is_stripped()
+    test_direct_and_pooler_ports_both_normalize()
     test_supabase_direct_url_upgraded_for_github_actions()
     test_supabase_transaction_pooler_downgraded_in_github_actions()
     test_database_url_raw_skips_supabase_rewrite()

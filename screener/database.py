@@ -28,6 +28,15 @@ _POSTGRES_PREFIXES = (
     "postgres://",
 )
 
+# psycopg2 / libpq が解釈できないクエリパラメータ（Supabase・ORM 由来）
+_PSQL_QUERY_STRIP_KEYS = frozenset(
+    {
+        "pgbouncer",
+        "pool_mode",
+        "connection_limit",
+    }
+)
+
 
 def parse_database_url(url: str) -> Dict[str, Any]:
     """正規化済み URL から接続要素を取り出す（テスト・デバッグ用）。"""
@@ -91,6 +100,31 @@ def _fix_postgres_credentials(url: str) -> str:
     return prefix + _encode_userinfo(username, password) + "@" + location
 
 
+def _sanitize_postgres_query(url: str) -> str:
+    """
+    psycopg2 に渡せないクエリパラメータを URL から除去する。
+
+    Supabase / Prisma 等が付与する ``pgbouncer=true`` は libpq 非対応のため
+    ``invalid connection option "pgbouncer"`` になる。port/host から pooler 種別は判定する。
+    """
+    parsed = urlparse(url)
+    if "postgresql" not in (parsed.scheme or ""):
+        return url
+
+    query = parse_qs(parsed.query)
+    removed = [key for key in query if key.lower() in _PSQL_QUERY_STRIP_KEYS]
+    for key in removed:
+        query.pop(key, None)
+    if removed:
+        logger.info(
+            "DATABASE_URL から psycopg2 非対応パラメータを除去: %s",
+            ", ".join(sorted(removed)),
+        )
+
+    query_str = urlencode({k: v[0] for k, v in query.items()}) if query else ""
+    return urlunparse(parsed._replace(query=query_str))
+
+
 def _extract_supabase_project_ref(url: str) -> Optional[str]:
     """Supabase project ref を URL または環境変数から取得する。"""
     parsed = urlparse(url)
@@ -139,7 +173,6 @@ def _normalize_supabase_url(url: str) -> str:
 
     - GitHub Actions 等 IPv4 環境: db.*.supabase.co 直接接続 → session pooler (5432)
     - Supavisor: username `postgres` → `postgres.<project-ref>`
-    - Transaction pooler (6543): pgbouncer=true を付与
     """
     if not is_supabase_url_rewrite_enabled():
         return url
@@ -175,7 +208,6 @@ def _normalize_supabase_url(url: str) -> str:
             pooler_host,
         )
         parsed = parsed._replace(netloc=netloc, path=f"/{database}")
-        query.pop("pgbouncer", None)
         changed = True
     elif (
         "pooler.supabase.com" in host
@@ -190,7 +222,6 @@ def _normalize_supabase_url(url: str) -> str:
             "Supabase transaction pooler (6543) を session pooler (5432) に変換"
         )
         parsed = parsed._replace(netloc=netloc)
-        query.pop("pgbouncer", None)
         changed = True
     elif "pooler.supabase.com" in host and username == "postgres" and ref:
         userinfo = _encode_userinfo(f"postgres.{ref}", password)
@@ -221,11 +252,10 @@ def normalize_database_url(raw: str) -> str:
         url = _fix_postgres_credentials(url)
         if is_supabase_url_rewrite_enabled():
             url = _normalize_supabase_url(url)
+        url = _sanitize_postgres_query(url)
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
         query.setdefault("sslmode", ["require"])
-        if _uses_transaction_pooler(url):
-            query.setdefault("pgbouncer", ["true"])
         url = urlunparse(
             parsed._replace(query=urlencode({k: v[0] for k, v in query.items()}))
         )
@@ -291,15 +321,8 @@ def reset_engine() -> None:
 def _uses_transaction_pooler(url: str) -> bool:
     """Supabase PgBouncer transaction mode (port 6543) 等を検出する。"""
     parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
-    port = parsed.port
-    if port == 6543:
-        return True
-    if "pooler.supabase.com" in host and port in (None, 6543):
-        return True
-    query = parse_qs(parsed.query)
-    pgbouncer = (query.get("pgbouncer") or query.get("pool_mode") or [""])[0].lower()
-    return pgbouncer in ("true", "transaction")
+    port = parsed.port or 5432
+    return port == 6543
 
 
 def get_engine() -> Engine:
