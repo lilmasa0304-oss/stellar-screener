@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import uuid
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -29,6 +30,21 @@ HORIZON_LABELS = {
 }
 MAX_TRACKING_BUSINESS_DAYS = 10
 RISK_MODES = ("堅実", "標準", "積極")
+
+
+def _safe_num(value: Any, *, digits: Optional[int] = 4) -> Optional[float]:
+    """pandas / DB 由来の NaN・Inf を None に正規化する。"""
+    if value is None:
+        return None
+    try:
+        if hasattr(value, "item"):
+            value = value.item()
+        num = float(value)
+        if math.isnan(num) or math.isinf(num):
+            return None
+        return round(num, digits) if digits is not None else num
+    except (TypeError, ValueError):
+        return None
 
 
 def register_track_from_scan(
@@ -124,17 +140,19 @@ def _window_metrics(df: pd.DataFrame, entry_price: float, eval_date: date) -> Op
     if available.empty:
         return None
     exit_row = available.iloc[-1]
-    exit_price = float(exit_row["Close"])
-    high_max = float(available["High"].max())
-    low_min = float(available["Low"].min())
+    exit_price = _safe_num(exit_row["Close"])
+    high_max = _safe_num(available["High"].max())
+    low_min = _safe_num(available["Low"].min())
+    if exit_price is None or high_max is None or low_min is None:
+        return None
     return_pct = ((exit_price - entry_price) / entry_price) * 100.0
     max_return_pct = ((high_max - entry_price) / entry_price) * 100.0
     min_return_pct = ((low_min - entry_price) / entry_price) * 100.0
     return {
         "exit_price": exit_price,
-        "return_pct": round(return_pct, 4),
-        "max_return_pct": round(max_return_pct, 4),
-        "min_return_pct": round(min_return_pct, 4),
+        "return_pct": _safe_num(return_pct),
+        "max_return_pct": _safe_num(max_return_pct),
+        "min_return_pct": _safe_num(min_return_pct),
         "is_win": return_pct > 0,
     }
 
@@ -151,19 +169,21 @@ def _live_snapshot_metrics(
     if available.empty:
         return None
     current_row = available.iloc[-1]
-    current_price = float(current_row["Close"])
-    period_high = float(available["High"].max())
-    period_low = float(available["Low"].min())
+    current_price = _safe_num(current_row["Close"])
+    period_high = _safe_num(available["High"].max())
+    period_low = _safe_num(available["Low"].min())
+    if current_price is None or period_high is None or period_low is None:
+        return None
     current_return_pct = ((current_price - entry_price) / entry_price) * 100.0
     max_return_pct = ((period_high - entry_price) / entry_price) * 100.0
     min_return_pct = ((period_low - entry_price) / entry_price) * 100.0
     return {
-        "current_price": round(current_price, 4),
-        "current_return_pct": round(current_return_pct, 4),
-        "period_high": round(period_high, 4),
-        "period_low": round(period_low, 4),
-        "max_return_pct": round(max_return_pct, 4),
-        "min_return_pct": round(min_return_pct, 4),
+        "current_price": current_price,
+        "current_return_pct": _safe_num(current_return_pct),
+        "period_high": period_high,
+        "period_low": period_low,
+        "max_return_pct": _safe_num(max_return_pct),
+        "min_return_pct": _safe_num(min_return_pct),
     }
 
 
@@ -312,10 +332,14 @@ def _aggregate_horizon(outcomes: List[Dict[str, Any]], horizon: int) -> Dict[str
         }
 
     wins = sum(1 for r in completed if r.get("is_win"))
-    avg_return = sum(float(r["return_pct"]) for r in completed) / len(completed)
-    avg_max_return = sum(float(r["max_return_pct"]) for r in completed) / len(completed)
+    returns = [_safe_num(r.get("return_pct"), digits=2) for r in completed]
+    max_returns = [_safe_num(r.get("max_return_pct"), digits=2) for r in completed]
+    returns = [v for v in returns if v is not None]
+    max_returns = [v for v in max_returns if v is not None]
+    avg_return = sum(returns) / len(returns) if returns else None
+    avg_max_return = sum(max_returns) / len(max_returns) if max_returns else None
     max_positive_rate = (
-        sum(1 for r in completed if float(r.get("max_return_pct") or 0) > 0) / len(completed) * 100.0
+        sum(1 for v in max_returns if v > 0) / len(max_returns) * 100.0 if max_returns else None
     )
 
     return {
@@ -325,10 +349,10 @@ def _aggregate_horizon(outcomes: List[Dict[str, Any]], horizon: int) -> Dict[str
         "evaluated_count": len(completed),
         "pending_count": len(pending),
         "insufficient_data_count": len(insufficient),
-        "win_rate_pct": round(wins / len(completed) * 100.0, 2),
-        "avg_return_pct": round(avg_return, 2),
-        "max_return_achievement_rate_pct": round(avg_max_return, 2),
-        "max_return_positive_rate_pct": round(max_positive_rate, 2),
+        "win_rate_pct": round(wins / len(completed) * 100.0, 2) if completed else None,
+        "avg_return_pct": round(avg_return, 2) if avg_return is not None else None,
+        "max_return_achievement_rate_pct": round(avg_max_return, 2) if avg_max_return is not None else None,
+        "max_return_positive_rate_pct": round(max_positive_rate, 2) if max_positive_rate is not None else None,
     }
 
 
@@ -346,18 +370,24 @@ def _mode_stats(mode: str) -> Dict[str, Any]:
     if finalized:
         wins = sum(1 for t in finalized if t.get("final_is_win"))
         win_rate_pct = round(wins / len(finalized) * 100.0, 2)
-        avg_return_pct = round(
-            sum(float(t["final_return_pct"]) for t in finalized) / len(finalized),
-            2,
-        )
-        max_profit_pct = round(
-            max(float(t.get("max_return_pct") or t["final_return_pct"]) for t in finalized),
-            2,
-        )
-        max_loss_pct = round(
-            min(float(t.get("min_return_pct") or t["final_return_pct"]) for t in finalized),
-            2,
-        )
+        final_returns = [_safe_num(t.get("final_return_pct"), digits=2) for t in finalized]
+        final_returns = [v for v in final_returns if v is not None]
+        if final_returns:
+            avg_return_pct = round(sum(final_returns) / len(final_returns), 2)
+            profit_candidates = [
+                _safe_num(t.get("max_return_pct"), digits=2) or _safe_num(t.get("final_return_pct"), digits=2)
+                for t in finalized
+            ]
+            loss_candidates = [
+                _safe_num(t.get("min_return_pct"), digits=2) or _safe_num(t.get("final_return_pct"), digits=2)
+                for t in finalized
+            ]
+            profit_candidates = [v for v in profit_candidates if v is not None]
+            loss_candidates = [v for v in loss_candidates if v is not None]
+            if profit_candidates:
+                max_profit_pct = round(max(profit_candidates), 2)
+            if loss_candidates:
+                max_loss_pct = round(min(loss_candidates), 2)
 
     return {
         "risk_mode": mode,
@@ -403,19 +433,19 @@ def _track_to_dashboard_row(track: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "track_id": track["track_id"],
         "ticker": track["ticker"],
-        "name": track["name"],
-        "signal_date": track["signal_date"],
+        "name": track.get("name") or track["ticker"],
+        "signal_date": str(track.get("signal_date") or "")[:10],
         "risk_mode": track.get("risk_mode"),
-        "entry_price": track["entry_price"],
+        "entry_price": _safe_num(track.get("entry_price"), digits=None),
         "status": status,
         "elapsed_business_days": elapsed,
         "elapsed_label": "検証完了" if is_archived else f"{elapsed}日目",
-        "current_price": track.get("current_price"),
-        "return_pct": return_pct,
-        "period_high": track.get("period_high"),
-        "period_low": track.get("period_low"),
-        "max_return_pct": track.get("max_return_pct"),
-        "min_return_pct": track.get("min_return_pct"),
+        "current_price": _safe_num(track.get("current_price"), digits=None),
+        "return_pct": _safe_num(return_pct, digits=2),
+        "period_high": _safe_num(track.get("period_high"), digits=None),
+        "period_low": _safe_num(track.get("period_low"), digits=None),
+        "max_return_pct": _safe_num(track.get("max_return_pct"), digits=2),
+        "min_return_pct": _safe_num(track.get("min_return_pct"), digits=2),
         "is_win": track.get("final_is_win") if is_archived else ((return_pct or 0) > 0),
         "archived_at": track.get("archived_at"),
         "preset_matched": track.get("preset_matched"),
