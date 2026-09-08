@@ -47,33 +47,84 @@ def _safe_num(value: Any, *, digits: Optional[int] = 4) -> Optional[float]:
         return None
 
 
+def _is_buy_signal(value: Any) -> bool:
+    """numpy.bool_ / 'true' / 1 など、BUY SIGNAL 判定を正規化する。"""
+    if value is None:
+        return False
+    try:
+        if hasattr(value, "item"):
+            value = value.item()
+    except Exception:
+        pass
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    try:
+        return bool(value)
+    except (TypeError, ValueError):
+        return False
+
+
 def register_track_from_scan(
     scan_id: str,
     ev: Dict[str, Any],
     *,
     risk_mode: Optional[str] = None,
     scan_result_id: Optional[int] = None,
+    force: bool = False,
 ) -> Optional[int]:
     """BUY SIGNAL 銘柄を追跡登録する。"""
-    if not ev.get("buy_signal"):
+    ticker = ev.get("ticker")
+    if not force and not _is_buy_signal(ev.get("buy_signal")):
+        logger.warning(
+            "検証リスト登録スキップ: BUY SIGNAL ではない ticker=%s buy_signal=%r",
+            ticker,
+            ev.get("buy_signal"),
+        )
         return None
-    entry_price = ev.get("current_price") or ev.get("close_price")
-    if entry_price is None:
+    raw_price = ev.get("current_price")
+    if raw_price is None:
+        raw_price = ev.get("close_price")
+    entry_price = _safe_num(raw_price, digits=None)
+    if entry_price is None or entry_price <= 0:
+        logger.warning(
+            "検証リスト登録スキップ: 価格なし ticker=%s current_price=%r close_price=%r",
+            ticker,
+            ev.get("current_price"),
+            ev.get("close_price"),
+        )
+        return None
+    if not ticker:
+        logger.warning("検証リスト登録スキップ: ticker なし")
         return None
     signal_date = today_jst()
     preset = ev.get("preset_matched")
     if preset in (None, "", "none"):
         preset = None
-    return storage.register_signal_track(
+    track_id = storage.register_signal_track(
         scan_id=scan_id,
         scan_result_id=scan_result_id,
-        ticker=ev["ticker"],
-        name=ev.get("name") or ev["ticker"],
+        ticker=ticker,
+        name=ev.get("name") or ticker,
         signal_date=signal_date.isoformat(),
         entry_price=float(entry_price),
         preset_matched=preset,
         risk_mode=risk_mode,
     )
+    if track_id is None:
+        logger.warning(
+            "検証リスト登録失敗: DB が track_id を返しませんでした ticker=%s scan_id=%s",
+            ticker,
+            scan_id,
+        )
+    else:
+        logger.info(
+            "検証リスト登録: track_id=%s ticker=%s mode=%s scan_id=%s",
+            track_id,
+            ticker,
+            risk_mode,
+            scan_id,
+        )
+    return track_id
 
 
 def register_manual_track(

@@ -16,7 +16,7 @@ load_dotenv(override=False)
 import yaml
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 from screener.config import Config
 from screener.data_fetcher import DataFetcher, create_diagnosis_fetcher
@@ -285,9 +285,39 @@ class WatchlistPayload(BaseModel):
     tickers: List[str] = Field(default_factory=list, description="ウォッチリスト銘柄コード一覧")
 
 
+def coerce_auto_verify(value: Any, default: bool = True) -> bool:
+    """チェックボックス / JSON / クエリの自動登録フラグを bool に正規化する。"""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off", ""):
+            return False
+        return default
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0
+    return bool(value)
+
+
 class MarketScanPayload(BaseModel):
     mode: Optional[str] = Field("堅実", description="リスクモード（堅実 / 標準 / 積極）")
-    auto_verify: bool = Field(True, description="検出銘柄を検証リストへ自動登録する")
+    auto_verify: bool = Field(
+        True,
+        description="検出銘柄を検証リストへ自動登録する",
+        validation_alias=AliasChoices(
+            "auto_verify",
+            "autoVerify",
+            "auto_register",
+            "autoRegister",
+        ),
+    )
+
+    @field_validator("auto_verify", mode="before")
+    @classmethod
+    def _coerce_auto_verify(cls, value: Any) -> bool:
+        return coerce_auto_verify(value, default=True)
 
 
 class TrackingRegisterPayload(BaseModel):
@@ -647,17 +677,45 @@ async def _execute_jpx400_realtime_scan(
                 ev[k] = float(ev[k])
         result_id = storage.save_result(scan_id, ev)
         ev["buy_signal"] = True
-        if auto_verify:
-            register_track_from_scan(
-                scan_id,
-                ev,
-                risk_mode=safe_mode,
-                scan_result_id=result_id,
-            )
+        ev["scan_result_id"] = result_id
+        ev["auto_registered"] = False
         buy_signals.append(ev)
 
     elapsed = round(time.monotonic() - started, 2)
     await _localize_stock_names(buy_signals)
+
+    auto_registered: List[Dict[str, Any]] = []
+    auto_register_errors: List[str] = []
+    if auto_verify:
+        for ev in buy_signals:
+            ticker = ev.get("ticker")
+            try:
+                track_id = register_track_from_scan(
+                    scan_id,
+                    ev,
+                    risk_mode=safe_mode,
+                    scan_result_id=ev.get("scan_result_id"),
+                    force=True,
+                )
+                if track_id is None:
+                    logger.warning(
+                        "検証リスト自動登録スキップ: scan_id=%s ticker=%s",
+                        scan_id,
+                        ticker,
+                    )
+                    continue
+                ev["auto_registered"] = True
+                ev["track_id"] = track_id
+                auto_registered.append({"ticker": ticker, "track_id": track_id})
+            except Exception as exc:
+                logger.exception(
+                    "検証リスト自動登録失敗: scan_id=%s ticker=%s: %s",
+                    scan_id,
+                    ticker,
+                    exc,
+                )
+                auto_register_errors.append(f"{ticker}: {exc}")
+
     decorated = _decorate_buy_signal_rows(buy_signals)
 
     storage.complete_session(
@@ -665,6 +723,19 @@ async def _execute_jpx400_realtime_scan(
         buy_signal_count=len(buy_signals),
         sent_line=False,
     )
+
+    message = _build_scan_completion_message(
+        safe_mode,
+        len(buy_signals),
+        total,
+        elapsed,
+        earnings_filtered_count,
+        earnings_cfg.get("enabled", True),
+    )
+    if auto_verify:
+        message += f" / 検証リストへ {len(auto_registered)} 件を自動登録"
+        if auto_register_errors:
+            message += f"（失敗 {len(auto_register_errors)} 件）"
 
     payload = {
         "status":          "completed",
@@ -678,15 +749,11 @@ async def _execute_jpx400_realtime_scan(
         "earnings_filtered_count": earnings_filtered_count,
         "earnings_filter_enabled": earnings_cfg.get("enabled", True),
         "auto_verify": auto_verify,
+        "auto_registered_count": len(auto_registered),
+        "auto_registered_tickers": [row["ticker"] for row in auto_registered],
+        "auto_register_errors": auto_register_errors,
         "elapsed_seconds": elapsed,
-        "message":         _build_scan_completion_message(
-            safe_mode,
-            len(buy_signals),
-            total,
-            elapsed,
-            earnings_filtered_count,
-            earnings_cfg.get("enabled", True),
-        ),
+        "message":         message,
     }
     _jpx400_progress.update(payload)
     logger.info(payload["message"])
@@ -694,6 +761,7 @@ async def _execute_jpx400_realtime_scan(
 
 
 @app.post("/api/jpx400/scan")
+@app.post("/api/scan")
 async def start_jpx400_scan(payload: MarketScanPayload):
     """JPX400 約400銘柄をリアルタイム並列スキャンし、結果を同一レスポンスで返す。"""
     if _scan_lock.locked():
@@ -707,12 +775,18 @@ async def start_jpx400_scan(payload: MarketScanPayload):
         )
 
     safe_mode = payload.mode if payload.mode in RISK_MODES else "堅実"
+    verify_flag = coerce_auto_verify(payload.auto_verify, default=True)
+    logger.info(
+        "[JPX400 scan] mode=%s auto_verify=%s",
+        safe_mode,
+        verify_flag,
+    )
     try:
         async with _scan_lock:
-            return await _execute_jpx400_realtime_scan(
+            return _json_safe(await _execute_jpx400_realtime_scan(
                 safe_mode,
-                auto_verify=payload.auto_verify,
-            )
+                auto_verify=verify_flag,
+            ))
     except Exception as e:
         logger.exception(f"[JPX400 scan] 致命的エラー: {e}")
         _jpx400_progress.update({"status": "failed", "error": str(e)})

@@ -361,7 +361,7 @@
                 </span>
             </label>
 
-            <button id="scan-btn" onclick="startJpx400Scan()"
+            <button type="button" id="scan-btn" onclick="startJpx400Scan()"
                 class="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-400 text-slate-900 font-extrabold py-4 px-4 rounded-xl shadow-[0_4px_15px_rgba(16,185,129,0.25)] transition-all duration-200 text-base md:text-sm tracking-wide flex items-center justify-center gap-2.5 cursor-pointer border-t border-emerald-400/20 disabled:cursor-not-allowed min-h-[52px]">
                 <i class="fa-solid fa-radar text-base" id="scan-btn-icon"></i>
                 <span id="scan-btn-label">JPX400 スキャン開始</span>
@@ -832,7 +832,7 @@
 
         function isAutoVerifyEnabled() {
             const toggle = document.getElementById('auto-verify-toggle');
-            return toggle ? toggle.checked : true;
+            return !!(toggle && toggle.checked);
         }
 
         function initAutoVerifyToggle() {
@@ -1118,9 +1118,10 @@
             label.textContent = '待機中';
         }
 
-        function renderScanHits(hits) {
+        function renderScanHits(hits, options = {}) {
             const emptyEl = document.getElementById('scan-hits-empty');
             const listEl = document.getElementById('scan-hits-list');
+            const autoVerify = Boolean(options.autoVerify);
             listEl.innerHTML = '';
             showScanResults();
 
@@ -1140,13 +1141,25 @@
                 const label = hit.signal_label || (preset === 'oshieme' ? '押し目シグナル' : preset === 'junbari' ? '順張りブレイク' : 'シグナル');
                 const code = displayTickerCode(hit.ticker || '');
                 const displayName = hit.name || code;
+                const alreadyRegistered = Boolean(hit.auto_registered) || Boolean(hit.track_id);
                 const row = document.createElement('div');
                 row.className = 'hit-card flex flex-col sm:flex-row sm:items-center gap-4 bg-slate-900/50 border border-slate-800 rounded-xl';
+                const verifyButtonHtml = alreadyRegistered
+                    ? `<button type="button" data-action="verify" disabled
+                            class="w-full sm:w-auto bg-slate-700 text-slate-200 font-bold px-4 py-3.5 rounded-xl text-sm min-h-[48px] cursor-default">
+                            <i class="fa-solid fa-check mr-1"></i> 登録済
+                        </button>`
+                    : `<button type="button" data-action="verify"
+                            class="w-full sm:w-auto bg-amber-800 hover:bg-amber-700 disabled:bg-slate-700 text-white font-bold px-4 py-3.5 rounded-xl text-sm transition-colors min-h-[48px]">
+                            <i class="fa-solid fa-flask mr-1.5"></i> 🧪 検証リストに追加
+                        </button>`;
                 row.innerHTML = `
                     <div class="flex-1 min-w-0 space-y-2">
                         <div class="flex flex-wrap items-center gap-2">
                             <span class="font-bold text-slate-100 mono-font text-base">${escapeHtml(code)}</span>
                             <span class="text-xs px-2.5 py-1 rounded border font-bold ${signalBadgeClass(preset)}">${escapeHtml(label)}</span>
+                            ${alreadyRegistered ? '<span class="text-[10px] font-bold text-amber-400 bg-amber-950/50 border border-amber-800/40 px-2 py-0.5 rounded">検証リスト登録済</span>' : ''}
+                            ${autoVerify && !alreadyRegistered ? '<span class="text-[10px] font-bold text-pink-400 bg-pink-950/40 border border-pink-800/40 px-2 py-0.5 rounded">自動登録失敗</span>' : ''}
                         </div>
                         <div class="text-base md:text-sm font-semibold text-slate-100 leading-snug">${escapeHtml(displayName)}</div>
                         <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm md:text-xs text-slate-400 mono-font">
@@ -1155,10 +1168,7 @@
                         </div>
                     </div>
                     <div class="flex flex-col sm:flex-row gap-2 shrink-0 w-full sm:w-auto">
-                        <button type="button" data-action="verify"
-                            class="w-full sm:w-auto bg-amber-800 hover:bg-amber-700 disabled:bg-slate-700 text-white font-bold px-4 py-3.5 rounded-xl text-sm transition-colors min-h-[48px]">
-                            <i class="fa-solid fa-flask mr-1.5"></i> 🧪 検証リストに追加
-                        </button>
+                        ${verifyButtonHtml}
                         <button type="button" data-action="ai"
                             class="w-full sm:w-auto bg-cyan-800 hover:bg-cyan-700 disabled:bg-slate-700 text-white font-bold px-5 py-3.5 rounded-xl text-sm transition-colors min-h-[48px]">
                             <i class="fa-solid fa-wand-magic-sparkles mr-1.5"></i> AI診断
@@ -1168,9 +1178,12 @@
                 row.querySelector('[data-action="ai"]').addEventListener('click', () => {
                     diagnoseHitWithAi(hit);
                 });
-                row.querySelector('[data-action="verify"]').addEventListener('click', (event) => {
-                    registerToVerifyList(hit, event.currentTarget);
-                });
+                const verifyBtn = row.querySelector('[data-action="verify"]');
+                if (verifyBtn && !alreadyRegistered) {
+                    verifyBtn.addEventListener('click', (event) => {
+                        registerToVerifyList(hit, event.currentTarget);
+                    });
+                }
                 listEl.appendChild(row);
             });
 
@@ -1206,12 +1219,13 @@
             updateScanProgressUI({ status: 'running', total: 400, mode: selectedRiskMode });
 
             try {
+                const autoVerify = isAutoVerifyEnabled();
                 const response = await fetch('/api/jpx400/scan', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         mode: selectedRiskMode,
-                        auto_verify: isAutoVerifyEnabled(),
+                        auto_verify: autoVerify,
                     }),
                 });
                 const data = await response.json().catch(() => ({}));
@@ -1219,10 +1233,18 @@
                     throw new Error(data.detail || `サーバーエラー (${response.status})`);
                 }
 
+                const autoVerifyApplied = data.auto_verify !== false && autoVerify;
                 updateScanProgressUI(data);
-                renderScanHits(data.buy_signals || []);
+                renderScanHits(data.buy_signals || [], { autoVerify: autoVerifyApplied });
                 scanStatus.textContent = data.message || `JPX400 スキャン完了: BUY SIGNAL ${data.buy_count || 0} 件`;
-                loadForwardTestDashboard(true);
+                if (autoVerify) {
+                    try {
+                        await loadForwardTestDashboard(false);
+                        loadForwardTestDashboard(true);
+                    } catch (dashboardError) {
+                        console.warn('検証リストの再取得に失敗しました:', dashboardError);
+                    }
+                }
             } catch (error) {
                 showScanResults();
                 updateScanProgressUI({ status: 'failed', error: error.message });

@@ -64,9 +64,20 @@ def test_aggregate_horizon():
     assert h3["max_return_achievement_rate_pct"] == 2.5
 
 
+def test_is_buy_signal_coercion():
+    from screener.signal_tracker import _is_buy_signal
+
+    assert _is_buy_signal(True) is True
+    assert _is_buy_signal(1) is True
+    assert _is_buy_signal("true") is True
+    assert _is_buy_signal(False) is False
+    assert _is_buy_signal(None) is False
+
+
 if __name__ == "__main__":
     test_tracking_horizons_are_ten_day_model()
     test_add_jp_business_days()
     test_window_metrics()
     test_aggregate_horizon()
+    test_is_buy_signal_coercion()
     print("ok")
