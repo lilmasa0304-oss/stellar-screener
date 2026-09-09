@@ -19,6 +19,42 @@ def normalize_jp_stock_code(raw: str) -> Optional[str]:
     return None
 
 
+def tracking_ticker_key(raw: Optional[str]) -> Optional[str]:
+    """同一銘柄判定用キー。'3465' と '3465.T' はどちらも '3465'。"""
+    if raw is None:
+        return None
+    code = normalize_jp_stock_code(str(raw))
+    if code:
+        return code
+    token = unicodedata.normalize("NFKC", str(raw).strip()).upper().removesuffix(".T")
+    return token or None
+
+
+def canonicalize_yahoo_ticker(raw: Optional[str]) -> Optional[str]:
+    """追跡・株価取得用に銘柄コードを Yahoo 形式（例: 3465.T）へ正規化する。"""
+    if raw is None:
+        return None
+    code = normalize_jp_stock_code(str(raw))
+    if code:
+        return f"{code}.T"
+    token = unicodedata.normalize("NFKC", str(raw).strip()).upper()
+    return token or None
+
+
+def ticker_lookup_variants(raw: Optional[str]) -> List[str]:
+    """DB 照合用の銘柄表記ゆれ（'3465', '3465.T'）。"""
+    variants: List[str] = []
+    canonical = canonicalize_yahoo_ticker(raw)
+    key = tracking_ticker_key(raw)
+    for value in (canonical, key):
+        if not value:
+            continue
+        token = value.upper()
+        if token not in variants:
+            variants.append(token)
+    return variants
+
+
 def find_jp_stock_code_in_text(text: str) -> Optional[str]:
     """文中から日本株銘柄コードを抽出する（英字付きコードを数字4桁より優先）。"""
     q = unicodedata.normalize("NFKC", text).upper()

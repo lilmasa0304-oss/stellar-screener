@@ -1,8 +1,11 @@
 """銘柄コード解析の簡易テスト。"""
 from screener.jp_stock_code import (
     extract_jp_stock_code,
+    canonicalize_yahoo_ticker,
     normalize_jp_stock_code,
     normalize_stock_codes_param,
+    ticker_lookup_variants,
+    tracking_ticker_key,
 )
 from screener.jp_stock_names import resolve_jp_display_name
 
@@ -36,6 +39,14 @@ assert "アオキ" in name_3549 or "クスリ" in name_3549, name_3549
 name_7203 = resolve_jp_display_name("7203.T", "Toyota Motor Corporation")
 print(f"7203.T ja name: {name_7203!r}")
 assert "トヨタ" in name_7203, name_7203
+
+assert canonicalize_yahoo_ticker("3465") == "3465.T"
+assert canonicalize_yahoo_ticker("3465.T") == "3465.T"
+assert canonicalize_yahoo_ticker("3465.t") == "3465.T"
+assert tracking_ticker_key("3465") == tracking_ticker_key("3465.T") == "3465"
+assert ticker_lookup_variants("3465") == ["3465.T", "3465"]
+assert ticker_lookup_variants("3465.T") == ["3465.T", "3465"]
+print("canonicalize/tracking key: OK")
 
 print(f"\n{len(CASES) - failed}/{len(CASES)} passed")
 raise SystemExit(1 if failed else 0)

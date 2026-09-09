@@ -47,6 +47,7 @@ from screener.dify_workflow import (
 from screener.jp_stock_code import (
     extract_jp_stock_code,
     find_jp_stock_code_in_text,
+    canonicalize_yahoo_ticker,
     normalize_jp_stock_code,
     normalize_stock_codes_param,
     split_stock_codes,
@@ -867,9 +868,9 @@ def get_tracking_dashboard(auto_evaluate: bool = True):
 def register_tracking(payload: TrackingRegisterPayload):
     """スキャン結果から手動で検証リストへ登録する。"""
     safe_mode = payload.risk_mode if payload.risk_mode in RISK_MODES else "堅実"
-    ticker = normalize_jp_stock_code(payload.ticker) or payload.ticker.strip().upper()
-    if not ticker.endswith(".T"):
-        ticker = f"{ticker}.T"
+    ticker = canonicalize_yahoo_ticker(payload.ticker)
+    if not ticker:
+        raise HTTPException(status_code=422, detail="銘柄コードが不正です。")
     try:
         track_id = register_manual_track(
             ticker=ticker,

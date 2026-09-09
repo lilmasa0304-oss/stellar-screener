@@ -1,6 +1,13 @@
 """シグナル追跡集計のユニットテスト。"""
 
 from datetime import date
+from unittest.mock import MagicMock
+import sys
+
+try:
+    import tenacity  # noqa: F401
+except ModuleNotFoundError:
+    sys.modules["tenacity"] = MagicMock()
 
 import pandas as pd
 
@@ -74,10 +81,47 @@ def test_is_buy_signal_coercion():
     assert _is_buy_signal(None) is False
 
 
+def test_register_track_from_scan_canonicalizes_ticker():
+    from unittest.mock import patch
+
+    from screener.signal_tracker import register_track_from_scan
+
+    captured = {}
+
+    def fake_register(**kwargs):
+        captured.update(kwargs)
+        return 99
+
+    with patch("screener.storage.register_signal_track", side_effect=fake_register):
+        track_id = register_track_from_scan(
+            "scan_1",
+            {"ticker": "3465", "current_price": 1234, "buy_signal": True, "name": "テスト"},
+            risk_mode="堅実",
+        )
+    assert track_id == 99
+    assert captured["ticker"] == "3465.T"
+    assert captured["risk_mode"] == "堅実"
+
+
+def test_dedupe_dashboard_tracks_collapses_ticker_variants():
+    from screener.signal_tracker import _dedupe_dashboard_tracks
+
+    rows = _dedupe_dashboard_tracks(
+        [
+            {"ticker": "3465.T", "signal_date": "2026-09-09", "risk_mode": "堅実", "track_id": 2},
+            {"ticker": "3465", "signal_date": "2026-09-09", "risk_mode": "堅実", "track_id": 1},
+            {"ticker": "3465.T", "signal_date": "2026-09-09", "risk_mode": "積極", "track_id": 3},
+        ]
+    )
+    assert [row["track_id"] for row in rows] == [2, 3]
+
+
 if __name__ == "__main__":
     test_tracking_horizons_are_ten_day_model()
     test_add_jp_business_days()
     test_window_metrics()
     test_aggregate_horizon()
     test_is_buy_signal_coercion()
+    test_register_track_from_scan_canonicalizes_ticker()
+    test_dedupe_dashboard_tracks_collapses_ticker_variants()
     print("ok")

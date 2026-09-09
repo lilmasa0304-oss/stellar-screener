@@ -17,6 +17,7 @@ from screener.jp_business_days import (
     parse_signal_date,
     today_jst,
 )
+from screener.jp_stock_code import canonicalize_yahoo_ticker, tracking_ticker_key
 from screener import storage
 from screener.yahoo_chart import fetch_history_with_fallback
 
@@ -73,11 +74,12 @@ def register_track_from_scan(
     force: bool = False,
 ) -> Optional[int]:
     """BUY SIGNAL 銘柄を追跡登録する。"""
-    ticker = ev.get("ticker")
+    raw_ticker = ev.get("ticker")
+    ticker = canonicalize_yahoo_ticker(raw_ticker)
     if not force and not _is_buy_signal(ev.get("buy_signal")):
         logger.warning(
             "検証リスト登録スキップ: BUY SIGNAL ではない ticker=%s buy_signal=%r",
-            ticker,
+            raw_ticker,
             ev.get("buy_signal"),
         )
         return None
@@ -88,13 +90,13 @@ def register_track_from_scan(
     if entry_price is None or entry_price <= 0:
         logger.warning(
             "検証リスト登録スキップ: 価格なし ticker=%s current_price=%r close_price=%r",
-            ticker,
+            raw_ticker,
             ev.get("current_price"),
             ev.get("close_price"),
         )
         return None
     if not ticker:
-        logger.warning("検証リスト登録スキップ: ticker なし")
+        logger.warning("検証リスト登録スキップ: ticker なし raw=%r", raw_ticker)
         return None
     signal_date = today_jst()
     preset = ev.get("preset_matched")
@@ -149,9 +151,7 @@ def register_manual_track(
 
 def _fetch_history_df(ticker: str, start: date, end: date) -> pd.DataFrame:
     """登録日〜評価日の株価履歴（Chart API / Stooq フォールバック）。"""
-    symbol = ticker.strip().upper()
-    if not symbol.endswith(".T") and symbol[:-1].isdigit():
-        symbol = f"{symbol}.T"
+    symbol = canonicalize_yahoo_ticker(ticker) or ticker.strip().upper()
 
     span_days = max((end - start).days + 10, 30)
     if span_days <= 90:
@@ -503,6 +503,23 @@ def _track_to_dashboard_row(track: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _dedupe_dashboard_tracks(tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """同一銘柄・同日・同モードの表示重複を除外する（新しい行を残す）。"""
+    seen = set()
+    unique: List[Dict[str, Any]] = []
+    for track in tracks:
+        identity = (
+            tracking_ticker_key(track.get("ticker")) or str(track.get("ticker") or "").upper(),
+            str(track.get("signal_date") or "")[:10],
+            track.get("risk_mode") or "",
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(track)
+    return unique
+
+
 def build_forward_test_dashboard(*, auto_evaluate: bool = True) -> Dict[str, Any]:
     """パフォーマンス検証ダッシュボード用データを返す。"""
     if auto_evaluate:
@@ -510,7 +527,7 @@ def build_forward_test_dashboard(*, auto_evaluate: bool = True) -> Dict[str, Any
 
     active = storage.list_signal_tracks(status="tracking", limit=100)
     archived = storage.list_signal_tracks(status="archived", limit=200)
-    tracks = [_track_to_dashboard_row(t) for t in active + archived]
+    tracks = _dedupe_dashboard_tracks([_track_to_dashboard_row(t) for t in active + archived])
 
     return {
         "status": "success",

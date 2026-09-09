@@ -1002,7 +1002,7 @@
         }
 
         async function registerToVerifyList(hit, buttonEl) {
-            const ticker = hit?.ticker;
+            const ticker = normalizeWatchlistTicker(hit?.ticker) || hit?.ticker;
             const entryPrice = hit?.current_price;
             if (!ticker || entryPrice == null) return;
 

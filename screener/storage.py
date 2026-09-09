@@ -29,6 +29,11 @@ from screener.database import (
     reset_engine,
 )
 from screener.db_path import resolve_db_path
+from screener.jp_stock_code import (
+    canonicalize_yahoo_ticker,
+    ticker_lookup_variants,
+    tracking_ticker_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +65,22 @@ def _warn_if_ephemeral() -> None:
 def init_db() -> bool:
     """DB とテーブルを初期化する（初回起動時に呼び出す）。失敗時は False。"""
     _warn_if_ephemeral()
-    return initialize_database_schema()
+    ok = initialize_database_schema()
+    if ok:
+        try:
+            result = cleanup_duplicate_signal_tracks()
+            deleted = int(result.get("deleted_tracks") or 0)
+            normalized = int(result.get("normalized_tickers") or 0)
+            if deleted or normalized:
+                logger.info(
+                    "signal_tracks 重複クリーンアップ: deleted=%s normalized=%s groups=%s",
+                    deleted,
+                    normalized,
+                    result.get("duplicate_groups"),
+                )
+        except Exception:
+            logger.exception("signal_tracks 重複クリーンアップ失敗")
+    return ok
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -221,6 +241,49 @@ def get_history_buy_signals(limit: int = 50) -> List[Dict[str, Any]]:
     return results
 
 
+def _signal_date_key(signal_date: Optional[str]) -> str:
+    return str(signal_date or "")[:10]
+
+
+def _risk_mode_key(risk_mode: Optional[str]) -> str:
+    return (risk_mode or "").strip()
+
+
+def _ensure_track_outcomes(conn, track_id: int) -> None:
+    for horizon, label in ((3, "3日目"), (5, "5日目（1週間）"), (10, "10日目（2週間）")):
+        insert_ignore(
+            conn,
+            "signal_track_outcomes",
+            ["track_id", "horizon_days", "horizon_label", "status"],
+            (track_id, horizon, label, "pending"),
+            ["track_id", "horizon_days"],
+        )
+
+
+def find_existing_signal_track(
+    conn,
+    *,
+    ticker: str,
+    signal_date: str,
+    risk_mode: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """同一銘柄（3465 / 3465.T）・同日・同モードの既存追跡を返す。"""
+    variants = ticker_lookup_variants(ticker)
+    if not variants:
+        return None
+    placeholders = ", ".join("?" for _ in variants)
+    return fetchone(
+        conn,
+        f"""SELECT * FROM signal_tracks
+            WHERE UPPER(ticker) IN ({placeholders})
+              AND substr(CAST(signal_date AS TEXT), 1, 10) = ?
+              AND COALESCE(risk_mode, '') = ?
+            ORDER BY registered_at DESC, track_id DESC
+            LIMIT 1""",
+        (*variants, _signal_date_key(signal_date), _risk_mode_key(risk_mode)),
+    )
+
+
 def register_signal_track(
     *,
     scan_id: str,
@@ -232,8 +295,37 @@ def register_signal_track(
     risk_mode: Optional[str] = None,
     scan_result_id: Optional[int] = None,
 ) -> Optional[int]:
+    canonical = canonicalize_yahoo_ticker(ticker)
+    if not canonical:
+        logger.warning("検証リスト登録スキップ: ticker を正規化できません raw=%r", ticker)
+        return None
+    ticker = canonical
     now = datetime.utcnow().isoformat()
     with connect() as conn:
+        existing = find_existing_signal_track(
+            conn,
+            ticker=ticker,
+            signal_date=signal_date,
+            risk_mode=risk_mode,
+        )
+        if existing:
+            track_id = int(existing["track_id"])
+            if str(existing.get("ticker") or "") != ticker:
+                execute(
+                    conn,
+                    "UPDATE signal_tracks SET ticker=? WHERE track_id=?",
+                    (ticker, track_id),
+                )
+            logger.info(
+                "検証リスト重複スキップ: track_id=%s ticker=%s signal_date=%s risk_mode=%s",
+                track_id,
+                ticker,
+                _signal_date_key(signal_date),
+                risk_mode,
+            )
+            _ensure_track_outcomes(conn, track_id)
+            return track_id
+
         if get_backend() == "postgresql":
             row = fetchone(
                 conn,
@@ -302,15 +394,93 @@ def register_signal_track(
         if track_id is None:
             return None
 
-        for horizon, label in ((3, "3日目"), (5, "5日目（1週間）"), (10, "10日目（2週間）")):
-            insert_ignore(
-                conn,
-                "signal_track_outcomes",
-                ["track_id", "horizon_days", "horizon_label", "status"],
-                (track_id, horizon, label, "pending"),
-                ["track_id", "horizon_days"],
-            )
+        _ensure_track_outcomes(conn, track_id)
         return track_id
+
+
+def _track_dedup_identity(row: Dict[str, Any]) -> tuple[str, str, str]:
+    key = tracking_ticker_key(row.get("ticker")) or str(row.get("ticker") or "").upper()
+    return (key, _signal_date_key(row.get("signal_date")), _risk_mode_key(row.get("risk_mode")))
+
+
+def _track_keep_score(row: Dict[str, Any], complete_counts: Dict[int, int]) -> tuple:
+    """残すレコードの優先度。評価済み件数 → 新しい登録日時 → 大きい track_id。"""
+    track_id = int(row["track_id"])
+    return (
+        int(complete_counts.get(track_id, 0)),
+        str(row.get("registered_at") or ""),
+        track_id,
+    )
+
+
+def cleanup_duplicate_signal_tracks() -> Dict[str, int]:
+    """同一銘柄・同日・同モードの重複を削除し、残件の ticker を XXXX.T に揃える。"""
+    deleted_tracks = 0
+    deleted_outcomes = 0
+    normalized_tickers = 0
+    duplicate_groups = 0
+
+    with connect() as conn:
+        rows = fetchall(conn, "SELECT * FROM signal_tracks ORDER BY track_id ASC")
+        complete_rows = fetchall(
+            conn,
+            """SELECT track_id, COUNT(*) AS cnt
+               FROM signal_track_outcomes
+               WHERE status='complete'
+               GROUP BY track_id""",
+        )
+        complete_counts = {int(r["track_id"]): int(r["cnt"]) for r in complete_rows}
+
+        groups: Dict[tuple[str, str, str], List[Dict[str, Any]]] = {}
+        for row in rows:
+            groups.setdefault(_track_dedup_identity(row), []).append(row)
+
+        for identity, members in groups.items():
+            if len(members) < 2:
+                continue
+            duplicate_groups += 1
+            keep = max(members, key=lambda member: _track_keep_score(member, complete_counts))
+            keep_id = int(keep["track_id"])
+            for row in members:
+                track_id = int(row["track_id"])
+                if track_id == keep_id:
+                    continue
+                out = execute(
+                    conn,
+                    "DELETE FROM signal_track_outcomes WHERE track_id=?",
+                    (track_id,),
+                )
+                deleted_outcomes += int(out.rowcount or 0)
+                execute(conn, "DELETE FROM signal_tracks WHERE track_id=?", (track_id,))
+                deleted_tracks += 1
+                logger.info(
+                    "重複追跡を削除: track_id=%s ticker=%s signal_date=%s risk_mode=%s keep=%s",
+                    track_id,
+                    row.get("ticker"),
+                    identity[1],
+                    identity[2] or None,
+                    keep_id,
+                )
+
+        remaining = fetchall(conn, "SELECT track_id, ticker FROM signal_tracks")
+        for row in remaining:
+            canonical = canonicalize_yahoo_ticker(row.get("ticker"))
+            current = str(row.get("ticker") or "")
+            if not canonical or canonical == current:
+                continue
+            execute(
+                conn,
+                "UPDATE signal_tracks SET ticker=? WHERE track_id=?",
+                (canonical, int(row["track_id"])),
+            )
+            normalized_tickers += 1
+
+    return {
+        "duplicate_groups": duplicate_groups,
+        "deleted_tracks": deleted_tracks,
+        "deleted_outcomes": deleted_outcomes,
+        "normalized_tickers": normalized_tickers,
+    }
 
 
 def list_active_signal_tracks(limit: int = 100) -> List[Dict[str, Any]]:
