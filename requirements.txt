@@ -26,6 +26,9 @@ pytz>=2024.1
 SQLAlchemy>=2.0.29
 psycopg2-binary>=2.9.9
 
+# Supabase Auth JWT 検証
+PyJWT>=2.8.0
+
 # JPX400 PDF 動的取得（任意・未使用時も import エラーにならない）
 pypdf>=4.0.0
 

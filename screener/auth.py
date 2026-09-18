@@ -1,9 +1,11 @@
-"""Supabase Auth JWT 検証（FastAPI 依存性）。"""
+"""Supabase Auth JWT / 匿名クライアント ID 検証（FastAPI 依存性）。"""
 
 from __future__ import annotations
 
 import logging
 import os
+import re
+import uuid
 from dataclasses import dataclass
 from typing import Optional
 
@@ -11,6 +13,11 @@ import jwt
 from fastapi import Header, HTTPException
 
 logger = logging.getLogger(__name__)
+
+_CLIENT_USER_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -36,9 +43,22 @@ def get_supabase_public_config() -> dict:
     anon_key = os.getenv("SUPABASE_ANON_KEY", "").strip()
     return {
         "enabled": is_auth_enabled(),
+        "anonymous_auth": True,
+        "client_user_header": "X-Client-User-Id",
         "supabase_url": url or None,
         "supabase_anon_key": anon_key or None,
     }
+
+
+def _normalize_client_user_id(raw: Optional[str]) -> Optional[str]:
+    """ブラウザ localStorage 由来の匿名 UUID を検証する。"""
+    value = str(raw or "").strip()
+    if not value or not _CLIENT_USER_ID_RE.match(value):
+        return None
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return None
 
 
 def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
@@ -81,28 +101,35 @@ def verify_access_token(token: str) -> AuthUser:
 
 def get_current_user(
     authorization: Optional[str] = Header(None, alias="Authorization"),
+    x_client_user_id: Optional[str] = Header(None, alias="X-Client-User-Id"),
 ) -> AuthUser:
     """
-    認証必須モード: Bearer トークン必須。
-    未設定モード: ゲスト（id=None）— ローカル開発向け。
+    ユーザー識別（優先順）:
+    1. Supabase JWT（匿名ログイン含む）
+    2. ブラウザ永続 UUID（X-Client-User-Id）
+    3. 未設定モード: id=None（ローカル開発・スコープなし）
     """
-    if not is_auth_enabled():
-        return AuthUser(id=None)
-
     token = _extract_bearer_token(authorization)
-    if not token:
+    if token and is_auth_enabled():
+        return verify_access_token(token)
+
+    client_id = _normalize_client_user_id(x_client_user_id)
+    if client_id:
+        return AuthUser(id=client_id)
+
+    if is_auth_enabled():
         raise HTTPException(
             status_code=401,
-            detail="ログインが必要です。",
+            detail="匿名セッションを確立できません。",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return verify_access_token(token)
+    return AuthUser(id=None)
 
 
-def require_user_id(user: AuthUser) -> str:
-    """認証必須モードで user_id を返す。未設定モードは None。"""
-    if not is_auth_enabled():
-        return None  # type: ignore[return-value]
-    if not user.id:
-        raise HTTPException(status_code=401, detail="ログインが必要です。")
-    return user.id
+def require_user_id(user: AuthUser) -> Optional[str]:
+    """user_id を返す。JWT/匿名 ID モードでは id 必須。"""
+    if user.id:
+        return user.id
+    if is_auth_enabled():
+        raise HTTPException(status_code=401, detail="匿名セッションを確立できません。")
+    return None

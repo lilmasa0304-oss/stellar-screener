@@ -39,6 +39,13 @@ services:
       # Supabase: Project Settings → Database → Connection string (URI)
       - key: DATABASE_URL
         sync: false
+      # Supabase Auth（マルチユーザー）
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
       # 任意: /api/tracking/evaluate の外部 Cron 保護用
       - key: CRON_SECRET
         sync: false

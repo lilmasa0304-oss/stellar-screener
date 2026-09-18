@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>STELLAR SCREENER V3.0 // 分析ターミナル</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=JetBrains+Mono:wght@500;700&display=swap');
@@ -532,18 +533,106 @@
         let isChatBusy = false;
         let isScanRunning = false;
         let watchlistTickers = [];
+        let authConfig = { enabled: false };
+        let supabaseClient = null;
+        let authSession = null;
+        let clientUserId = null;
+        let anonymousSessionReady = false;
         const RISK_MODES = ['堅実', '標準', '積極'];
         const WATCHLIST_STORAGE_KEY = 'stellar_watchlist_v1';
         const AUTO_VERIFY_STORAGE_KEY = 'stellar_auto_verify_v1';
+        const ANONYMOUS_USER_STORAGE_KEY = 'stellar_anonymous_user_v1';
         const JP_STOCK_CODE = /^[0-9A-Z]{4}$/i;
 
         function normalizeStockInput(raw) {
             return (raw || '').normalize('NFKC').trim();
         }
 
+        function getOrCreateLocalUserId() {
+            let id = localStorage.getItem(ANONYMOUS_USER_STORAGE_KEY);
+            if (!id) {
+                id = crypto.randomUUID();
+                localStorage.setItem(ANONYMOUS_USER_STORAGE_KEY, id);
+            }
+            return id;
+        }
+
+        function authHeaders(extra = {}) {
+            const headers = { ...(extra || {}) };
+            if (authSession?.access_token) {
+                headers.Authorization = `Bearer ${authSession.access_token}`;
+            } else if (clientUserId) {
+                headers['X-Client-User-Id'] = clientUserId;
+            }
+            return headers;
+        }
+
+        function isSessionReady() {
+            if (!authConfig?.enabled) return true;
+            return Boolean(authSession?.access_token || clientUserId);
+        }
+
+        async function ensureSupabaseAnonymousSession() {
+            if (!authConfig.supabase_url || !authConfig.supabase_anon_key) {
+                return false;
+            }
+            if (!window.supabase?.createClient) {
+                console.warn('Supabase JS が読み込まれていません');
+                return false;
+            }
+
+            supabaseClient = window.supabase.createClient(
+                authConfig.supabase_url,
+                authConfig.supabase_anon_key
+            );
+
+            const { data: { session } } = await supabaseClient.auth.getSession();
+            if (session?.access_token) {
+                authSession = session;
+                return true;
+            }
+
+            const { data, error } = await supabaseClient.auth.signInAnonymously();
+            if (error) {
+                console.warn('Supabase 匿名ログイン失敗:', error.message);
+                return false;
+            }
+            authSession = data.session;
+            return Boolean(authSession?.access_token);
+        }
+
+        async function initAnonymousSession() {
+            try {
+                authConfig = await fetch('/api/auth/config').then((r) => r.json());
+            } catch (error) {
+                console.warn('認証設定の取得に失敗:', error);
+                authConfig = { enabled: false };
+            }
+
+            if (authConfig.enabled) {
+                const supabaseReady = await ensureSupabaseAnonymousSession();
+                if (!supabaseReady) {
+                    clientUserId = getOrCreateLocalUserId();
+                }
+            } else {
+                clientUserId = getOrCreateLocalUserId();
+            }
+
+            anonymousSessionReady = isSessionReady();
+        }
+
         /** API レスポンスを安全に JSON 化（Safari の JSON.parse エラー回避） */
         async function fetchJsonSafe(url, options = {}) {
-            const response = await fetch(url, options);
+            if (!anonymousSessionReady) {
+                await initAnonymousSession();
+            }
+            if (!isSessionReady()) {
+                throw new Error('匿名セッションを準備できませんでした');
+            }
+            const response = await fetch(url, {
+                ...options,
+                headers: authHeaders(options.headers || {}),
+            });
             const text = await response.text();
             let data = null;
             if (text) {
@@ -955,6 +1044,10 @@
             const metaEl = document.getElementById('tracking-dashboard-meta');
             const modeLabel = document.getElementById('tracking-mode-label');
             if (!metaEl) return;
+            if (!isSessionReady()) {
+                metaEl.textContent = 'セッション準備中...';
+                return;
+            }
 
             if (modeLabel) modeLabel.textContent = selectedRiskMode;
             metaEl.textContent = forceEvaluate ? '株価・成績を評価中...' : '検証データを読み込み中...';
@@ -1013,7 +1106,7 @@
             try {
                 const response = await fetch('/api/tracking/register', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: authHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({
                         ticker,
                         name: hit.name || null,
@@ -1206,6 +1299,13 @@
 
         async function startJpx400Scan() {
             if (isScanRunning || isChatBusy) return;
+            if (!anonymousSessionReady) {
+                await initAnonymousSession();
+            }
+            if (!isSessionReady()) {
+                alert('セッションの準備に失敗しました。ページを再読み込みしてください。');
+                return;
+            }
 
             setScanBusy(true);
             const scanStatus = document.getElementById('scan-status');
@@ -1222,7 +1322,7 @@
                 const autoVerify = isAutoVerifyEnabled();
                 const response = await fetch('/api/jpx400/scan', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: authHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({
                         mode: selectedRiskMode,
                         auto_verify: autoVerify,
@@ -1447,7 +1547,7 @@
         initAutoVerifyToggle();
         loadWatchlist();
         loadAiStatus();
-        loadForwardTestDashboard(false);
+        initAnonymousSession().then(() => loadForwardTestDashboard(false));
     </script>
 </body>
 

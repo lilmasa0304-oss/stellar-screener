@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv(override=False)
 
 import yaml
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 
@@ -53,6 +53,13 @@ from screener.jp_stock_code import (
     split_stock_codes,
 )
 from screener.jp_stock_names import resolve_jp_display_name
+from screener.auth import (
+    AuthUser,
+    get_current_user,
+    get_supabase_public_config,
+    is_auth_enabled,
+    require_user_id,
+)
 from screener.signal_tracker import (
     build_forward_test_dashboard,
     build_tracking_summary,
@@ -603,6 +610,7 @@ async def _execute_jpx400_realtime_scan(
     selected_mode: str = "堅実",
     *,
     auto_verify: bool = True,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     JPX400（約400銘柄）を非同期並列スクリーニングし、結果を即時返却する。
@@ -629,6 +637,7 @@ async def _execute_jpx400_realtime_scan(
     _jpx400_progress.update({
         "status":          "running",
         "scan_id":         scan_id,
+        "user_id":         user_id,
         "mode":            safe_mode,
         "processed":       0,
         "total":           total,
@@ -642,6 +651,7 @@ async def _execute_jpx400_realtime_scan(
         scan_id=scan_id,
         scan_type=f"jpx400_{safe_mode}",
         total_tickers=total,
+        user_id=user_id,
     )
 
     started = time.monotonic()
@@ -676,7 +686,7 @@ async def _execute_jpx400_realtime_scan(
         for k in ("current_price", "rsi"):
             if ev.get(k) is not None:
                 ev[k] = float(ev[k])
-        result_id = storage.save_result(scan_id, ev)
+        result_id = storage.save_result(scan_id, ev, user_id=user_id)
         ev["buy_signal"] = True
         ev["scan_result_id"] = result_id
         ev["auto_registered"] = False
@@ -697,6 +707,7 @@ async def _execute_jpx400_realtime_scan(
                     risk_mode=safe_mode,
                     scan_result_id=ev.get("scan_result_id"),
                     force=True,
+                    user_id=user_id,
                 )
                 if track_id is None:
                     logger.warning(
@@ -763,7 +774,10 @@ async def _execute_jpx400_realtime_scan(
 
 @app.post("/api/jpx400/scan")
 @app.post("/api/scan")
-async def start_jpx400_scan(payload: MarketScanPayload):
+async def start_jpx400_scan(
+    payload: MarketScanPayload,
+    user: AuthUser = Depends(get_current_user),
+):
     """JPX400 約400銘柄をリアルタイム並列スキャンし、結果を同一レスポンスで返す。"""
     if _scan_lock.locked():
         raise HTTPException(
@@ -782,11 +796,13 @@ async def start_jpx400_scan(payload: MarketScanPayload):
         safe_mode,
         verify_flag,
     )
+    user_id = require_user_id(user)
     try:
         async with _scan_lock:
             return _json_safe(await _execute_jpx400_realtime_scan(
                 safe_mode,
                 auto_verify=verify_flag,
+                user_id=user_id,
             ))
     except Exception as e:
         logger.exception(f"[JPX400 scan] 致命的エラー: {e}")
@@ -795,57 +811,110 @@ async def start_jpx400_scan(payload: MarketScanPayload):
 
 
 @app.post("/api/market/scan")
-async def start_market_scan(payload: MarketScanPayload):
+async def start_market_scan(
+    payload: MarketScanPayload,
+    user: AuthUser = Depends(get_current_user),
+):
     """後方互換: JPX400 リアルタイムスキャンへ委譲。"""
-    return await start_jpx400_scan(payload)
+    return await start_jpx400_scan(payload, user)
+
+
+def _market_scan_status_payload(user_id: Optional[str]) -> Dict[str, Any]:
+    prog = dict(_jpx400_progress)
+    if user_id and prog.get("user_id") not in (None, user_id):
+        prog = {
+            "status": "idle",
+            "scan_id": None,
+            "user_id": user_id,
+            "processed": 0,
+            "total": 0,
+            "buy_count": 0,
+            "buy_signals": [],
+            "error": None,
+        }
+    scan_id = prog.get("scan_id")
+    session_info = storage.get_session(scan_id, user_id=user_id) if scan_id else None
+    return {
+        **prog,
+        "session": session_info,
+        "next_scan_time": get_next_run_time(),
+    }
 
 
 @app.get("/api/jpx400/status")
-def get_jpx400_status():
+def get_jpx400_status(user: AuthUser = Depends(get_current_user)):
     """直近の JPX400 スキャン結果（インメモリキャッシュ）を返す。"""
-    return get_market_scan_status()
+    return _market_scan_status_payload(require_user_id(user))
 
 
 @app.get("/api/market/status")
-def get_market_scan_status():
+def get_market_scan_status(user: AuthUser = Depends(get_current_user)):
     """直近の JPX400 スキャン結果を返す（後方互換エンドポイント）。"""
-    prog = dict(_jpx400_progress)
-    scan_id = prog.get("scan_id")
-    session_info = storage.get_session(scan_id) if scan_id else None
+    return _market_scan_status_payload(require_user_id(user))
+
+
+# ── 認証 API ─────────────────────────────────────────────────────────────
+@app.get("/api/auth/config")
+def get_auth_config():
+    """フロントエンド向け Supabase Auth 公開設定。"""
+    return get_supabase_public_config()
+
+
+@app.get("/api/auth/me")
+def get_auth_me(user: AuthUser = Depends(get_current_user)):
+    """現在のログインユーザー情報。"""
     return {
-        **prog,
-        "session":        session_info,
-        "next_scan_time": get_next_run_time(),
+        "authenticated": user.is_authenticated,
+        "user_id": user.id,
+        "email": user.email,
+        "auth_required": is_auth_enabled(),
     }
 
 
 # ── 履歴 API ─────────────────────────────────────────────────────────────
 @app.get("/api/history/sessions")
-def get_scan_history(limit: int = 20):
+def get_scan_history(
+    limit: int = 20,
+    user: AuthUser = Depends(get_current_user),
+):
     """過去のスキャンセッション一覧を返す。"""
+    user_id = require_user_id(user)
     try:
-        return storage.list_sessions(limit=limit)
+        return storage.list_sessions(limit=limit, user_id=user_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"履歴の取得に失敗: {e}")
 
 
 @app.get("/api/history/buy-signals")
-def get_buy_signal_history(limit: int = 50):
+def get_buy_signal_history(
+    limit: int = 50,
+    user: AuthUser = Depends(get_current_user),
+):
     """過去のスキャンで BUY SIGNAL が出た銘柄を新しい順に返す。"""
+    user_id = require_user_id(user)
     try:
-        return storage.get_history_buy_signals(limit=limit)
+        return storage.get_history_buy_signals(limit=limit, user_id=user_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"BUY SIGNAL 履歴の取得に失敗: {e}")
 
 
 @app.get("/api/history/results/{scan_id}")
-def get_scan_results(scan_id: str, buy_signal_only: bool = False):
+def get_scan_results(
+    scan_id: str,
+    buy_signal_only: bool = False,
+    user: AuthUser = Depends(get_current_user),
+):
     """特定スキャンの全銘柄結果を返す。"""
+    user_id = require_user_id(user)
     try:
-        session = storage.get_session(scan_id)
+        session = storage.get_session(scan_id, user_id=user_id)
         if not session:
             raise HTTPException(status_code=404, detail="スキャンが見つかりません。")
-        results = storage.get_results(scan_id, buy_signal_only=buy_signal_only)
+        results = storage.get_results(
+            scan_id,
+            buy_signal_only=buy_signal_only,
+            user_id=user_id,
+        )
         return {"scan_id": scan_id, "session": session, "results": results}
     except HTTPException:
         raise
@@ -855,18 +924,28 @@ def get_scan_results(scan_id: str, buy_signal_only: bool = False):
 
 # ── パフォーマンス検証 API ─────────────────────────────────────────────────
 @app.get("/api/tracking/dashboard")
-def get_tracking_dashboard(auto_evaluate: bool = True):
+def get_tracking_dashboard(
+    auto_evaluate: bool = True,
+    user: AuthUser = Depends(get_current_user),
+):
     """フォワードテスト追跡ダッシュボード（モード別比較・銘柄一覧）。"""
+    user_id = require_user_id(user)
     try:
-        return _json_safe(build_forward_test_dashboard(auto_evaluate=auto_evaluate))
+        return _json_safe(
+            build_forward_test_dashboard(auto_evaluate=auto_evaluate, user_id=user_id)
+        )
     except Exception as e:
         logger.exception("検証ダッシュボード取得失敗: %s", e)
         raise HTTPException(status_code=500, detail=f"検証ダッシュボードの取得に失敗: {e}") from e
 
 
 @app.post("/api/tracking/register")
-def register_tracking(payload: TrackingRegisterPayload):
+def register_tracking(
+    payload: TrackingRegisterPayload,
+    user: AuthUser = Depends(get_current_user),
+):
     """スキャン結果から手動で検証リストへ登録する。"""
+    user_id = require_user_id(user)
     safe_mode = payload.risk_mode if payload.risk_mode in RISK_MODES else "堅実"
     ticker = canonicalize_yahoo_ticker(payload.ticker)
     if not ticker:
@@ -878,6 +957,7 @@ def register_tracking(payload: TrackingRegisterPayload):
             entry_price=float(payload.entry_price),
             risk_mode=safe_mode,
             preset_matched=payload.preset_matched,
+            user_id=user_id,
         )
         if track_id is None:
             raise HTTPException(status_code=422, detail="検証リストへの登録に失敗しました。")
@@ -894,14 +974,17 @@ def get_tracking_summary(
     risk_mode: Optional[str] = None,
     preset_matched: Optional[str] = None,
     auto_evaluate: bool = True,
+    user: AuthUser = Depends(get_current_user),
 ):
     """3/5/10営業日目の勝率・平均損益率・最高益達成率を比較集計する。"""
+    user_id = require_user_id(user)
     try:
         return _json_safe(
             build_tracking_summary(
                 risk_mode=risk_mode,
                 preset_matched=preset_matched,
                 auto_evaluate=auto_evaluate,
+                user_id=user_id,
             )
         )
     except Exception as e:
@@ -921,11 +1004,15 @@ def _verify_cron_secret(x_cron_secret: Optional[str] = None) -> None:
 def evaluate_tracking(
     limit: int = 500,
     x_cron_secret: Optional[str] = Header(None, alias="X-Cron-Secret"),
+    user: AuthUser = Depends(get_current_user),
 ):
     """未評価の追跡シグナルを評価する（手動 / CRON / GitHub Actions から呼び出し可）。"""
     _verify_cron_secret(x_cron_secret)
+    expected = os.getenv("CRON_SECRET", "").strip()
+    is_cron = bool(expected and x_cron_secret == expected)
+    user_id = None if is_cron else require_user_id(user)
     try:
-        result = evaluate_pending_tracks(limit=limit)
+        result = evaluate_pending_tracks(limit=limit, user_id=user_id)
         return {"status": "success", **result}
     except Exception as e:
         logger.exception("追跡評価に失敗: %s", e)

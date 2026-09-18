@@ -72,6 +72,7 @@ def register_track_from_scan(
     risk_mode: Optional[str] = None,
     scan_result_id: Optional[int] = None,
     force: bool = False,
+    user_id: Optional[str] = None,
 ) -> Optional[int]:
     """BUY SIGNAL 銘柄を追跡登録する。"""
     raw_ticker = ev.get("ticker")
@@ -111,6 +112,7 @@ def register_track_from_scan(
         entry_price=float(entry_price),
         preset_matched=preset,
         risk_mode=risk_mode,
+        user_id=user_id,
     )
     if track_id is None:
         logger.warning(
@@ -136,6 +138,7 @@ def register_manual_track(
     entry_price: float,
     risk_mode: Optional[str] = None,
     preset_matched: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[int]:
     """スキャン結果画面から手動で検証リストへ登録する。"""
     scan_id = f"manual_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -146,7 +149,7 @@ def register_manual_track(
         "buy_signal": True,
         "preset_matched": preset_matched,
     }
-    return register_track_from_scan(scan_id, ev, risk_mode=risk_mode)
+    return register_track_from_scan(scan_id, ev, risk_mode=risk_mode, user_id=user_id)
 
 
 def _fetch_history_df(ticker: str, start: date, end: date) -> pd.DataFrame:
@@ -340,9 +343,13 @@ def evaluate_track(track: Dict[str, Any]) -> int:
     return updated
 
 
-def evaluate_pending_tracks(limit: int = 100) -> Dict[str, int]:
+def evaluate_pending_tracks(
+    limit: int = 100,
+    *,
+    user_id: Optional[str] = None,
+) -> Dict[str, int]:
     """未評価の追跡レコードを評価する。"""
-    tracks = storage.list_active_signal_tracks(limit=limit)
+    tracks = storage.list_active_signal_tracks(limit=limit, user_id=user_id)
     logger.info("追跡評価開始: active_tracks=%d limit=%d", len(tracks), limit)
     updated = 0
     for track in tracks:
@@ -407,8 +414,8 @@ def _aggregate_horizon(outcomes: List[Dict[str, Any]], horizon: int) -> Dict[str
     }
 
 
-def _mode_stats(mode: str) -> Dict[str, Any]:
-    all_tracks = storage.list_signal_tracks(risk_mode=mode, limit=1000)
+def _mode_stats(mode: str, *, user_id: Optional[str] = None) -> Dict[str, Any]:
+    all_tracks = storage.list_signal_tracks(risk_mode=mode, limit=1000, user_id=user_id)
     archived = [t for t in all_tracks if t.get("status") == "archived"]
     active = [t for t in all_tracks if t.get("status") == "tracking"]
     finalized = [t for t in archived if t.get("final_return_pct") is not None]
@@ -452,9 +459,9 @@ def _mode_stats(mode: str) -> Dict[str, Any]:
     }
 
 
-def build_mode_comparison_summary() -> Dict[str, Any]:
+def build_mode_comparison_summary(*, user_id: Optional[str] = None) -> Dict[str, Any]:
     """堅実・標準・積極モードの成績を比較する。"""
-    modes = [_mode_stats(mode) for mode in RISK_MODES]
+    modes = [_mode_stats(mode, user_id=user_id) for mode in RISK_MODES]
     best_mode = None
     best_score = -1.0
     for row in modes:
@@ -520,20 +527,24 @@ def _dedupe_dashboard_tracks(tracks: List[Dict[str, Any]]) -> List[Dict[str, Any
     return unique
 
 
-def build_forward_test_dashboard(*, auto_evaluate: bool = True) -> Dict[str, Any]:
+def build_forward_test_dashboard(
+    *,
+    auto_evaluate: bool = True,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """パフォーマンス検証ダッシュボード用データを返す。"""
     if auto_evaluate:
-        evaluate_pending_tracks(limit=200)
+        evaluate_pending_tracks(limit=200, user_id=user_id)
 
-    active = storage.list_signal_tracks(status="tracking", limit=100)
-    archived = storage.list_signal_tracks(status="archived", limit=200)
+    active = storage.list_signal_tracks(status="tracking", limit=100, user_id=user_id)
+    archived = storage.list_signal_tracks(status="archived", limit=200, user_id=user_id)
     tracks = _dedupe_dashboard_tracks([_track_to_dashboard_row(t) for t in active + archived])
 
     return {
         "status": "success",
         "tracking_period_business_days": MAX_TRACKING_BUSINESS_DAYS,
         "checkpoints": [HORIZON_LABELS[h] for h in TRACKING_HORIZONS],
-        "mode_comparison": build_mode_comparison_summary(),
+        "mode_comparison": build_mode_comparison_summary(user_id=user_id),
         "tracks": tracks,
         "active_count": len(active),
         "archived_count": len(archived),
@@ -545,19 +556,22 @@ def build_tracking_summary(
     risk_mode: Optional[str] = None,
     preset_matched: Optional[str] = None,
     auto_evaluate: bool = True,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """3/5/10日目の勝率・平均損益率・最高益達成率を比較集計する。"""
     if auto_evaluate:
-        evaluate_pending_tracks()
+        evaluate_pending_tracks(user_id=user_id)
 
     outcomes = storage.list_track_outcomes(
         risk_mode=risk_mode,
         preset_matched=preset_matched,
+        user_id=user_id,
     )
     horizons = [_aggregate_horizon(outcomes, h) for h in TRACKING_HORIZONS]
     total_registered = storage.count_signal_tracks(
         risk_mode=risk_mode,
         preset_matched=preset_matched,
+        user_id=user_id,
     )
 
     return {
@@ -570,7 +584,7 @@ def build_tracking_summary(
             "preset_matched": preset_matched,
         },
         "horizons": horizons,
-        "mode_comparison": build_mode_comparison_summary(),
+        "mode_comparison": build_mode_comparison_summary(user_id=user_id),
         "notes": {
             "win_rate_pct": "各時点の終値ベース損益がプラスの比率",
             "avg_return_pct": "各時点の平均損益率（終値ベース）",
