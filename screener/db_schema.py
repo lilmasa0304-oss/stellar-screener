@@ -14,12 +14,14 @@ def init_schema(conn: Connection) -> None:
     else:
         _init_schema_sqlite(conn)
     _migrate_signal_tracks(conn)
+    _migrate_user_columns(conn)
 
 
 def _init_schema_sqlite(conn: Connection) -> None:
     execute(conn, """
         CREATE TABLE IF NOT EXISTS scan_sessions (
             scan_id          TEXT PRIMARY KEY,
+            user_id          TEXT,
             started_at       TEXT NOT NULL,
             completed_at     TEXT,
             status           TEXT NOT NULL DEFAULT 'running',
@@ -34,6 +36,7 @@ def _init_schema_sqlite(conn: Connection) -> None:
     execute(conn, """
         CREATE TABLE IF NOT EXISTS scan_results (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id          TEXT,
             scan_id          TEXT NOT NULL,
             ticker           TEXT NOT NULL,
             name             TEXT NOT NULL,
@@ -58,6 +61,7 @@ def _init_schema_sqlite(conn: Connection) -> None:
     execute(conn, """
         CREATE TABLE IF NOT EXISTS signal_tracks (
             track_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id          TEXT,
             scan_result_id   INTEGER,
             scan_id          TEXT NOT NULL,
             ticker           TEXT NOT NULL,
@@ -104,7 +108,10 @@ def _init_schema_sqlite(conn: Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_sr_scan_id ON scan_results(scan_id)",
         "CREATE INDEX IF NOT EXISTS idx_sr_buy_signal ON scan_results(buy_signal)",
         "CREATE INDEX IF NOT EXISTS idx_ss_status ON scan_sessions(status)",
+        "CREATE INDEX IF NOT EXISTS idx_ss_user_id ON scan_sessions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sr_user_id ON scan_results(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_st_status ON signal_tracks(status)",
+        "CREATE INDEX IF NOT EXISTS idx_st_user_id ON signal_tracks(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_sto_track ON signal_track_outcomes(track_id)",
         "CREATE INDEX IF NOT EXISTS idx_sto_horizon ON signal_track_outcomes(horizon_days)",
     ):
@@ -115,6 +122,7 @@ def _init_schema_postgresql(conn: Connection) -> None:
     execute(conn, """
         CREATE TABLE IF NOT EXISTS scan_sessions (
             scan_id          TEXT PRIMARY KEY,
+            user_id          TEXT,
             started_at       TEXT NOT NULL,
             completed_at     TEXT,
             status           TEXT NOT NULL DEFAULT 'running',
@@ -129,6 +137,7 @@ def _init_schema_postgresql(conn: Connection) -> None:
     execute(conn, """
         CREATE TABLE IF NOT EXISTS scan_results (
             id               SERIAL PRIMARY KEY,
+            user_id          TEXT,
             scan_id          TEXT NOT NULL,
             ticker           TEXT NOT NULL,
             name             TEXT NOT NULL,
@@ -153,6 +162,7 @@ def _init_schema_postgresql(conn: Connection) -> None:
     execute(conn, """
         CREATE TABLE IF NOT EXISTS signal_tracks (
             track_id         SERIAL PRIMARY KEY,
+            user_id          TEXT,
             scan_result_id   INTEGER,
             scan_id          TEXT NOT NULL,
             ticker           TEXT NOT NULL,
@@ -199,7 +209,10 @@ def _init_schema_postgresql(conn: Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_sr_scan_id ON scan_results(scan_id)",
         "CREATE INDEX IF NOT EXISTS idx_sr_buy_signal ON scan_results(buy_signal)",
         "CREATE INDEX IF NOT EXISTS idx_ss_status ON scan_sessions(status)",
+        "CREATE INDEX IF NOT EXISTS idx_ss_user_id ON scan_sessions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sr_user_id ON scan_results(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_st_status ON signal_tracks(status)",
+        "CREATE INDEX IF NOT EXISTS idx_st_user_id ON signal_tracks(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_sto_track ON signal_track_outcomes(track_id)",
         "CREATE INDEX IF NOT EXISTS idx_sto_horizon ON signal_track_outcomes(horizon_days)",
     ):
@@ -273,3 +286,44 @@ def _migrate_signal_tracks(conn: Connection) -> None:
                 """,
                 (horizon, label),
             )
+
+
+def _migrate_user_columns(conn: Connection) -> None:
+    """マルチユーザー用 user_id カラムとインデックスを追加する。"""
+    backend = get_backend()
+    user_tables = ("scan_sessions", "scan_results", "signal_tracks")
+    for table in user_tables:
+        if not _column_exists(conn, table, "user_id"):
+            execute(conn, f"ALTER TABLE {table} ADD COLUMN user_id TEXT")
+
+    for sql in (
+        "CREATE INDEX IF NOT EXISTS idx_ss_user_id ON scan_sessions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sr_user_id ON scan_results(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_st_user_id ON signal_tracks(user_id)",
+    ):
+        execute(conn, sql)
+
+    if backend == "postgresql":
+        execute(
+            conn,
+            """
+            DO $$
+            BEGIN
+              IF EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'signal_tracks_scan_id_ticker_signal_date_key'
+              ) THEN
+                ALTER TABLE signal_tracks
+                DROP CONSTRAINT signal_tracks_scan_id_ticker_signal_date_key;
+              END IF;
+            END $$;
+            """,
+        )
+        execute(
+            conn,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_st_user_scan_ticker_date
+            ON signal_tracks (user_id, scan_id, ticker, signal_date)
+            WHERE user_id IS NOT NULL
+            """,
+        )

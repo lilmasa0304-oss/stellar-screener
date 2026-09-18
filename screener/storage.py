@@ -87,15 +87,34 @@ def init_db() -> bool:
 # セッション操作
 # ─────────────────────────────────────────────────────────────────────────────
 
-def create_session(scan_id: str, scan_type: str, total_tickers: int) -> None:
+def _append_user_filter(
+    clauses: List[str],
+    params: List[Any],
+    user_id: Optional[str],
+    *,
+    column: str = "user_id",
+) -> None:
+    """user_id 指定時のみ行をユーザーに限定する（未指定時はフィルタなし）。"""
+    if user_id:
+        clauses.append(f"{column} = ?")
+        params.append(user_id)
+
+
+def create_session(
+    scan_id: str,
+    scan_type: str,
+    total_tickers: int,
+    *,
+    user_id: Optional[str] = None,
+) -> None:
     now = datetime.utcnow().isoformat()
     with connect() as conn:
         execute(
             conn,
             """INSERT INTO scan_sessions
-               (scan_id, started_at, status, scan_type, total_tickers)
-               VALUES (?, ?, 'running', ?, ?)""",
-            (scan_id, now, scan_type, total_tickers),
+               (scan_id, user_id, started_at, status, scan_type, total_tickers)
+               VALUES (?, ?, ?, 'running', ?, ?)""",
+            (scan_id, user_id, now, scan_type, total_tickers),
         )
 
 
@@ -126,31 +145,57 @@ def complete_session(
         )
 
 
-def get_session(scan_id: str) -> Optional[Dict[str, Any]]:
+def get_session(
+    scan_id: str,
+    *,
+    user_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    clauses = ["scan_id = ?"]
+    params: List[Any] = [scan_id]
+    _append_user_filter(clauses, params, user_id)
     with connect() as conn:
-        return fetchone(conn, "SELECT * FROM scan_sessions WHERE scan_id=?", (scan_id,))
-
-
-def get_latest_session(scan_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    with connect() as conn:
-        if scan_type:
-            return fetchone(
-                conn,
-                "SELECT * FROM scan_sessions WHERE scan_type=? ORDER BY started_at DESC LIMIT 1",
-                (scan_type,),
-            )
         return fetchone(
             conn,
-            "SELECT * FROM scan_sessions ORDER BY started_at DESC LIMIT 1",
+            f"SELECT * FROM scan_sessions WHERE {' AND '.join(clauses)}",
+            params,
         )
 
 
-def list_sessions(limit: int = 20) -> List[Dict[str, Any]]:
+def get_latest_session(
+    scan_type: Optional[str] = None,
+    *,
+    user_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    clauses: List[str] = []
+    params: List[Any] = []
+    if scan_type:
+        clauses.append("scan_type = ?")
+        params.append(scan_type)
+    _append_user_filter(clauses, params, user_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with connect() as conn:
+        return fetchone(
+            conn,
+            f"SELECT * FROM scan_sessions {where} ORDER BY started_at DESC LIMIT 1",
+            params,
+        )
+
+
+def list_sessions(
+    limit: int = 20,
+    *,
+    user_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    clauses: List[str] = []
+    params: List[Any] = []
+    _append_user_filter(clauses, params, user_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
     with connect() as conn:
         return fetchall(
             conn,
-            "SELECT * FROM scan_sessions ORDER BY started_at DESC LIMIT ?",
-            (limit,),
+            f"SELECT * FROM scan_sessions {where} ORDER BY started_at DESC LIMIT ?",
+            params,
         )
 
 
@@ -158,18 +203,24 @@ def list_sessions(limit: int = 20) -> List[Dict[str, Any]]:
 # 銘柄結果操作
 # ─────────────────────────────────────────────────────────────────────────────
 
-def save_result(scan_id: str, ev: Dict[str, Any]) -> int:
+def save_result(
+    scan_id: str,
+    ev: Dict[str, Any],
+    *,
+    user_id: Optional[str] = None,
+) -> int:
     now = datetime.utcnow().isoformat()
     with connect() as conn:
         return insert_returning_id(
             conn,
             """INSERT INTO scan_results
-               (scan_id, ticker, name, current_price, change_percent,
+               (user_id, scan_id, ticker, name, current_price, change_percent,
                 buy_signal, is_prime_entry, triggered, signals,
                 rsi, ma25, macd, macd_signal, macd_hist,
                 macd_crossover, macd_pre_crossover, ma25_uptrend, scanned_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
+                user_id,
                 scan_id,
                 ev["ticker"],
                 ev["name"],
@@ -205,34 +256,49 @@ def _normalize_scan_result(row: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-def get_results(scan_id: str, buy_signal_only: bool = False) -> List[Dict[str, Any]]:
-    with connect() as conn:
-        if buy_signal_only:
-            rows = fetchall(
-                conn,
-                "SELECT * FROM scan_results WHERE scan_id=? AND buy_signal=1 ORDER BY rsi",
-                (scan_id,),
-            )
-        else:
-            rows = fetchall(
-                conn,
-                "SELECT * FROM scan_results WHERE scan_id=? ORDER BY buy_signal DESC, rsi",
-                (scan_id,),
-            )
-    return [_normalize_scan_result(r) for r in rows]
-
-
-def get_history_buy_signals(limit: int = 50) -> List[Dict[str, Any]]:
+def get_results(
+    scan_id: str,
+    buy_signal_only: bool = False,
+    *,
+    user_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    clauses = ["scan_id = ?"]
+    params: List[Any] = [scan_id]
+    _append_user_filter(clauses, params, user_id)
+    if buy_signal_only:
+        clauses.append("buy_signal = 1")
+    order = "ORDER BY rsi" if buy_signal_only else "ORDER BY buy_signal DESC, rsi"
     with connect() as conn:
         rows = fetchall(
             conn,
-            """SELECT r.*, s.started_at as session_started_at, s.scan_type
-               FROM scan_results r
-               JOIN scan_sessions s ON r.scan_id = s.scan_id
-               WHERE r.buy_signal = 1
-               ORDER BY r.scanned_at DESC
-               LIMIT ?""",
-            (limit,),
+            f"SELECT * FROM scan_results WHERE {' AND '.join(clauses)} {order}",
+            params,
+        )
+    return [_normalize_scan_result(r) for r in rows]
+
+
+def get_history_buy_signals(
+    limit: int = 50,
+    *,
+    user_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    clauses = ["r.buy_signal = 1"]
+    params: List[Any] = []
+    if user_id:
+        clauses.append("r.user_id = ?")
+        clauses.append("s.user_id = ?")
+        params.extend([user_id, user_id])
+    params.append(limit)
+    with connect() as conn:
+        rows = fetchall(
+            conn,
+            f"""SELECT r.*, s.started_at as session_started_at, s.scan_type
+                FROM scan_results r
+                JOIN scan_sessions s ON r.scan_id = s.scan_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY r.scanned_at DESC
+                LIMIT ?""",
+            params,
         )
     results = []
     for row in rows:
@@ -266,21 +332,32 @@ def find_existing_signal_track(
     ticker: str,
     signal_date: str,
     risk_mode: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """同一銘柄（3465 / 3465.T）・同日・同モードの既存追跡を返す。"""
     variants = ticker_lookup_variants(ticker)
     if not variants:
         return None
     placeholders = ", ".join("?" for _ in variants)
+    clauses = [
+        f"UPPER(ticker) IN ({placeholders})",
+        "substr(CAST(signal_date AS TEXT), 1, 10) = ?",
+        "COALESCE(risk_mode, '') = ?",
+    ]
+    params: List[Any] = list(variants) + [
+        _signal_date_key(signal_date),
+        _risk_mode_key(risk_mode),
+    ]
+    if user_id:
+        clauses.append("user_id = ?")
+        params.append(user_id)
     return fetchone(
         conn,
         f"""SELECT * FROM signal_tracks
-            WHERE UPPER(ticker) IN ({placeholders})
-              AND substr(CAST(signal_date AS TEXT), 1, 10) = ?
-              AND COALESCE(risk_mode, '') = ?
+            WHERE {' AND '.join(clauses)}
             ORDER BY registered_at DESC, track_id DESC
             LIMIT 1""",
-        (*variants, _signal_date_key(signal_date), _risk_mode_key(risk_mode)),
+        params,
     )
 
 
@@ -294,6 +371,7 @@ def register_signal_track(
     preset_matched: Optional[str] = None,
     risk_mode: Optional[str] = None,
     scan_result_id: Optional[int] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[int]:
     canonical = canonicalize_yahoo_ticker(ticker)
     if not canonical:
@@ -307,6 +385,7 @@ def register_signal_track(
             ticker=ticker,
             signal_date=signal_date,
             risk_mode=risk_mode,
+            user_id=user_id,
         )
         if existing:
             track_id = int(existing["track_id"])
@@ -327,15 +406,31 @@ def register_signal_track(
             return track_id
 
         if get_backend() == "postgresql":
+            if user_id:
+                insert_sql = """
+                    INSERT INTO signal_tracks
+                       (user_id, scan_result_id, scan_id, ticker, name, signal_date,
+                        entry_price, preset_matched, risk_mode, registered_at, status)
+                       VALUES (?,?,?,?,?,?,?,?,?,?, 'tracking')
+                       ON CONFLICT (user_id, scan_id, ticker, signal_date)
+                       WHERE user_id IS NOT NULL
+                       DO NOTHING
+                       RETURNING track_id
+                """
+            else:
+                insert_sql = """
+                    INSERT INTO signal_tracks
+                       (user_id, scan_result_id, scan_id, ticker, name, signal_date,
+                        entry_price, preset_matched, risk_mode, registered_at, status)
+                       VALUES (?,?,?,?,?,?,?,?,?,?, 'tracking')
+                       ON CONFLICT (scan_id, ticker, signal_date) DO NOTHING
+                       RETURNING track_id
+                """
             row = fetchone(
                 conn,
-                """INSERT INTO signal_tracks
-                   (scan_result_id, scan_id, ticker, name, signal_date,
-                    entry_price, preset_matched, risk_mode, registered_at, status)
-                   VALUES (?,?,?,?,?,?,?,?,?, 'tracking')
-                   ON CONFLICT (scan_id, ticker, signal_date) DO NOTHING
-                   RETURNING track_id""",
+                insert_sql,
                 (
+                    user_id,
                     scan_result_id,
                     scan_id,
                     ticker,
@@ -350,11 +445,16 @@ def register_signal_track(
             if row:
                 track_id = int(row["track_id"])
             else:
+                lookup_clauses = ["scan_id=?", "ticker=?", "signal_date=?"]
+                lookup_params: List[Any] = [scan_id, ticker, signal_date]
+                if user_id:
+                    lookup_clauses.append("user_id=?")
+                    lookup_params.append(user_id)
                 existing = fetchone(
                     conn,
-                    """SELECT track_id FROM signal_tracks
-                       WHERE scan_id=? AND ticker=? AND signal_date=?""",
-                    (scan_id, ticker, signal_date),
+                    f"""SELECT track_id FROM signal_tracks
+                        WHERE {' AND '.join(lookup_clauses)}""",
+                    lookup_params,
                 )
                 track_id = int(existing["track_id"]) if existing else None
         else:
@@ -362,10 +462,11 @@ def register_signal_track(
                 track_id = insert_returning_id(
                     conn,
                     """INSERT INTO signal_tracks
-                       (scan_result_id, scan_id, ticker, name, signal_date,
+                       (user_id, scan_result_id, scan_id, ticker, name, signal_date,
                         entry_price, preset_matched, risk_mode, registered_at, status)
-                       VALUES (?,?,?,?,?,?,?,?,?, 'tracking')""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?, 'tracking')""",
                     (
+                        user_id,
                         scan_result_id,
                         scan_id,
                         ticker,
@@ -383,11 +484,16 @@ def register_signal_track(
 
                 if not isinstance(exc, IntegrityError):
                     raise
+                lookup_clauses = ["scan_id=?", "ticker=?", "signal_date=?"]
+                lookup_params = [scan_id, ticker, signal_date]
+                if user_id:
+                    lookup_clauses.append("user_id=?")
+                    lookup_params.append(user_id)
                 existing = fetchone(
                     conn,
-                    """SELECT track_id FROM signal_tracks
-                       WHERE scan_id=? AND ticker=? AND signal_date=?""",
-                    (scan_id, ticker, signal_date),
+                    f"""SELECT track_id FROM signal_tracks
+                        WHERE {' AND '.join(lookup_clauses)}""",
+                    lookup_params,
                 )
                 track_id = int(existing["track_id"]) if existing else None
 
@@ -483,15 +589,23 @@ def cleanup_duplicate_signal_tracks() -> Dict[str, int]:
     }
 
 
-def list_active_signal_tracks(limit: int = 100) -> List[Dict[str, Any]]:
+def list_active_signal_tracks(
+    limit: int = 100,
+    *,
+    user_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    clauses = ["status='tracking'"]
+    params: List[Any] = []
+    _append_user_filter(clauses, params, user_id)
+    params.append(limit)
     with connect() as conn:
         return fetchall(
             conn,
-            """SELECT * FROM signal_tracks
-               WHERE status='tracking'
-               ORDER BY registered_at DESC
-               LIMIT ?""",
-            (limit,),
+            f"""SELECT * FROM signal_tracks
+                WHERE {' AND '.join(clauses)}
+                ORDER BY registered_at DESC
+                LIMIT ?""",
+            params,
         )
 
 
@@ -576,6 +690,7 @@ def list_signal_tracks(
     status: Optional[str] = None,
     risk_mode: Optional[str] = None,
     limit: int = 200,
+    user_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     clauses: List[str] = []
     params: List[Any] = []
@@ -585,6 +700,7 @@ def list_signal_tracks(
     if risk_mode:
         clauses.append("risk_mode = ?")
         params.append(risk_mode)
+    _append_user_filter(clauses, params, user_id)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(limit)
     with connect() as conn:
@@ -703,6 +819,7 @@ def upsert_track_outcome(
 def _track_filters_sql(
     risk_mode: Optional[str],
     preset_matched: Optional[str],
+    user_id: Optional[str] = None,
 ) -> tuple[str, List[Any]]:
     clauses: List[str] = []
     params: List[Any] = []
@@ -712,6 +829,7 @@ def _track_filters_sql(
     if preset_matched:
         clauses.append("t.preset_matched = ?")
         params.append(preset_matched)
+    _append_user_filter(clauses, params, user_id, column="t.user_id")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     return where, params
 
@@ -721,8 +839,9 @@ def list_track_outcomes(
     risk_mode: Optional[str] = None,
     preset_matched: Optional[str] = None,
     limit: int = 5000,
+    user_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    where, params = _track_filters_sql(risk_mode, preset_matched)
+    where, params = _track_filters_sql(risk_mode, preset_matched, user_id)
     params.append(limit)
     with connect() as conn:
         rows = fetchall(
@@ -748,8 +867,9 @@ def count_signal_tracks(
     *,
     risk_mode: Optional[str] = None,
     preset_matched: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> int:
-    where, params = _track_filters_sql(risk_mode, preset_matched)
+    where, params = _track_filters_sql(risk_mode, preset_matched, user_id)
     with connect() as conn:
         row = fetchone(
             conn,
