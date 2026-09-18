@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.engine import Connection
 
 from screener.database import execute, fetchall, fetchone, get_backend
+
+logger = logging.getLogger(__name__)
+
+_USER_ID_TABLES = ("scan_sessions", "scan_results", "signal_tracks")
 
 
 def init_schema(conn: Connection) -> None:
@@ -13,8 +19,24 @@ def init_schema(conn: Connection) -> None:
         _init_schema_postgresql(conn)
     else:
         _init_schema_sqlite(conn)
-    _migrate_signal_tracks(conn)
+    # user_id 追加はインデックス作成より前に必須（既存テーブルでは CREATE TABLE IF NOT EXISTS が
+    # カラムを足さないため、user_id インデックス作成でトランザクション全体が失敗していた）。
     _migrate_user_columns(conn)
+    _migrate_signal_tracks(conn)
+
+
+def ensure_user_id_columns(conn: Connection) -> None:
+    """既存テーブルへ user_id を追加する。CREATE TABLE IF NOT EXISTS では足されない。"""
+    backend = get_backend()
+    for table in _USER_ID_TABLES:
+        if backend == "postgresql":
+            execute(
+                conn,
+                f"ALTER TABLE IF EXISTS {table} ADD COLUMN IF NOT EXISTS user_id TEXT",
+            )
+        elif not _column_exists(conn, table, "user_id"):
+            execute(conn, f"ALTER TABLE {table} ADD COLUMN user_id TEXT")
+    logger.info("ensured user_id columns on %s", ", ".join(_USER_ID_TABLES))
 
 
 def _init_schema_sqlite(conn: Connection) -> None:
@@ -104,18 +126,8 @@ def _init_schema_sqlite(conn: Connection) -> None:
             FOREIGN KEY (track_id) REFERENCES signal_tracks(track_id)
         )
     """)
-    for sql in (
-        "CREATE INDEX IF NOT EXISTS idx_sr_scan_id ON scan_results(scan_id)",
-        "CREATE INDEX IF NOT EXISTS idx_sr_buy_signal ON scan_results(buy_signal)",
-        "CREATE INDEX IF NOT EXISTS idx_ss_status ON scan_sessions(status)",
-        "CREATE INDEX IF NOT EXISTS idx_ss_user_id ON scan_sessions(user_id)",
-        "CREATE INDEX IF NOT EXISTS idx_sr_user_id ON scan_results(user_id)",
-        "CREATE INDEX IF NOT EXISTS idx_st_status ON signal_tracks(status)",
-        "CREATE INDEX IF NOT EXISTS idx_st_user_id ON signal_tracks(user_id)",
-        "CREATE INDEX IF NOT EXISTS idx_sto_track ON signal_track_outcomes(track_id)",
-        "CREATE INDEX IF NOT EXISTS idx_sto_horizon ON signal_track_outcomes(horizon_days)",
-    ):
-        execute(conn, sql)
+    ensure_user_id_columns(conn)
+    _create_common_indexes(conn)
 
 
 def _init_schema_postgresql(conn: Connection) -> None:
@@ -205,6 +217,11 @@ def _init_schema_postgresql(conn: Connection) -> None:
             FOREIGN KEY (track_id) REFERENCES signal_tracks(track_id)
         )
     """)
+    ensure_user_id_columns(conn)
+    _create_common_indexes(conn)
+
+
+def _create_common_indexes(conn: Connection) -> None:
     for sql in (
         "CREATE INDEX IF NOT EXISTS idx_sr_scan_id ON scan_results(scan_id)",
         "CREATE INDEX IF NOT EXISTS idx_sr_buy_signal ON scan_results(buy_signal)",
@@ -291,10 +308,7 @@ def _migrate_signal_tracks(conn: Connection) -> None:
 def _migrate_user_columns(conn: Connection) -> None:
     """マルチユーザー用 user_id カラムとインデックスを追加する。"""
     backend = get_backend()
-    user_tables = ("scan_sessions", "scan_results", "signal_tracks")
-    for table in user_tables:
-        if not _column_exists(conn, table, "user_id"):
-            execute(conn, f"ALTER TABLE {table} ADD COLUMN user_id TEXT")
+    ensure_user_id_columns(conn)
 
     for sql in (
         "CREATE INDEX IF NOT EXISTS idx_ss_user_id ON scan_sessions(user_id)",
@@ -304,26 +318,32 @@ def _migrate_user_columns(conn: Connection) -> None:
         execute(conn, sql)
 
     if backend == "postgresql":
-        execute(
-            conn,
-            """
-            DO $$
-            BEGIN
-              IF EXISTS (
-                SELECT 1 FROM pg_constraint
-                WHERE conname = 'signal_tracks_scan_id_ticker_signal_date_key'
-              ) THEN
-                ALTER TABLE signal_tracks
-                DROP CONSTRAINT signal_tracks_scan_id_ticker_signal_date_key;
-              END IF;
-            END $$;
-            """,
-        )
-        execute(
-            conn,
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_st_user_scan_ticker_date
-            ON signal_tracks (user_id, scan_id, ticker, signal_date)
-            WHERE user_id IS NOT NULL
-            """,
-        )
+        try:
+            with conn.begin_nested():
+                execute(
+                    conn,
+                    """
+                    DO $$
+                    BEGIN
+                      IF EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conname = 'signal_tracks_scan_id_ticker_signal_date_key'
+                      ) THEN
+                        ALTER TABLE signal_tracks
+                        DROP CONSTRAINT signal_tracks_scan_id_ticker_signal_date_key;
+                      END IF;
+                    END $$;
+                    """,
+                )
+                execute(
+                    conn,
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_st_user_scan_ticker_date
+                    ON signal_tracks (user_id, scan_id, ticker, signal_date)
+                    WHERE user_id IS NOT NULL
+                    """,
+                )
+        except Exception:
+            logger.exception(
+                "signal_tracks unique constraint migration failed; user_id columns are kept"
+            )

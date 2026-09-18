@@ -194,6 +194,114 @@ def test_cleanup_duplicate_signal_tracks_keeps_newer_and_normalizes():
             assert leftover == []
 
 
+def test_init_db_adds_missing_user_id_columns():
+    """既存テーブルに user_id が無い場合、init_db が ALTER TABLE で追加する。"""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        db_file = Path(tmp) / "legacy.db"
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE scan_sessions (
+                    scan_id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    scan_type TEXT NOT NULL DEFAULT 'manual',
+                    total_tickers INTEGER DEFAULT 0,
+                    processed INTEGER DEFAULT 0,
+                    buy_signal_count INTEGER DEFAULT 0,
+                    sent_line INTEGER DEFAULT 0,
+                    error_message TEXT
+                );
+                CREATE TABLE scan_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scan_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    current_price REAL,
+                    change_percent REAL,
+                    buy_signal INTEGER DEFAULT 0,
+                    is_prime_entry INTEGER DEFAULT 0,
+                    triggered INTEGER DEFAULT 0,
+                    signals TEXT,
+                    rsi REAL,
+                    ma25 REAL,
+                    macd REAL,
+                    macd_signal REAL,
+                    macd_hist REAL,
+                    macd_crossover INTEGER DEFAULT 0,
+                    macd_pre_crossover INTEGER DEFAULT 0,
+                    ma25_uptrend INTEGER DEFAULT 0,
+                    scanned_at TEXT NOT NULL
+                );
+                CREATE TABLE signal_tracks (
+                    track_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scan_result_id INTEGER,
+                    scan_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signal_date TEXT NOT NULL,
+                    entry_price REAL NOT NULL,
+                    preset_matched TEXT,
+                    risk_mode TEXT,
+                    registered_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'tracking'
+                );
+                """
+            )
+            conn.commit()
+
+        with env_override(
+            DATABASE_URL=f"sqlite:///{db_file.as_posix()}",
+            RENDER=None,
+            SQLITE_TEST_MODE="1",
+        ):
+            storage.refresh_db_path()
+            assert storage.init_db() is True
+            storage.create_session("scan_legacy", "jpx400", 10, user_id="user-1")
+            session = storage.get_session("scan_legacy", user_id="user-1")
+            assert session is not None
+            assert session["user_id"] == "user-1"
+            result_id = storage.save_result(
+                "scan_legacy",
+                {
+                    "ticker": "7203.T",
+                    "name": "トヨタ",
+                    "current_price": 2500.0,
+                    "change_percent": 1.2,
+                    "buy_signal": True,
+                    "is_prime_entry": False,
+                    "triggered": True,
+                    "signals": {"rsi": True},
+                    "rsi": 30.0,
+                    "ma25": 2400.0,
+                    "macd": 1.0,
+                    "macd_signal": 0.5,
+                    "macd_hist": 0.5,
+                    "macd_crossover": False,
+                    "macd_pre_crossover": False,
+                    "ma25_uptrend": True,
+                },
+                user_id="user-1",
+            )
+            assert result_id > 0
+            track_id = storage.register_signal_track(
+                scan_id="scan_legacy",
+                ticker="7203.T",
+                name="トヨタ",
+                signal_date="2026-09-18",
+                entry_price=2500.0,
+                risk_mode="堅実",
+                user_id="user-1",
+            )
+            assert track_id is not None
+
+        with sqlite3.connect(str(db_file)) as conn:
+            for table in ("scan_sessions", "scan_results", "signal_tracks"):
+                cols = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+                assert "user_id" in cols, f"{table} に user_id が追加されていません"
+
+
 def test_storage_info_local():
     with env_override(DATABASE_URL=None, RENDER=None):
         info = storage.get_storage_info()
@@ -210,5 +318,6 @@ if __name__ == "__main__":
     test_signal_tracks_persist_across_reconnect()
     test_register_normalizes_ticker_and_blocks_same_day_mode_duplicate()
     test_cleanup_duplicate_signal_tracks_keeps_newer_and_normalizes()
+    test_init_db_adds_missing_user_id_columns()
     test_storage_info_local()
     print("ok")

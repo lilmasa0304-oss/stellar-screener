@@ -29,6 +29,7 @@ from screener.database import (
     reset_engine,
 )
 from screener.db_path import resolve_db_path
+from screener.db_schema import ensure_user_id_columns
 from screener.jp_stock_code import (
     canonicalize_yahoo_ticker,
     ticker_lookup_variants,
@@ -66,6 +67,14 @@ def init_db() -> bool:
     """DB とテーブルを初期化する（初回起動時に呼び出す）。失敗時は False。"""
     _warn_if_ephemeral()
     ok = initialize_database_schema()
+    # 既存テーブルには CREATE TABLE IF NOT EXISTS で user_id が足されない。
+    # スキーマ全体の成否と別トランザクションで必ず追加する。
+    try:
+        with connect() as conn:
+            ensure_user_id_columns(conn)
+    except Exception:
+        logger.exception("user_id カラムの確認・追加に失敗しました")
+        return False
     if ok:
         try:
             result = cleanup_duplicate_signal_tracks()
