@@ -338,24 +338,34 @@
                 </div>
                 <div class="flex-1 min-w-0">
                     <h2 class="section-title text-emerald-400">③ JPX400 テクニカルスキャン</h2>
-                    <p class="section-desc">主要400銘柄のチャートを1回取得し、堅実・標準・積極の3モードを同時に評価します。ヒットした銘柄はモード別に保存・表示します。決算発表の前後1週間に該当する銘柄は、決算跨ぎリスク回避のため自動的に除外します。</p>
+                    <p class="section-desc">主要400銘柄のチャートを1回取得し、選んだモードだけを評価します。複数選ぶと同時に判定し、ヒットはモード別に保存・表示します。決算発表の前後1週間に該当する銘柄は、決算跨ぎリスク回避のため自動的に除外します。</p>
                 </div>
             </div>
 
             <div class="space-y-3">
-                <p class="text-sm font-bold text-slate-400">検証リストの表示モード</p>
-                <p class="text-xs text-slate-500 leading-relaxed">スキャンは堅実・標準・積極を同時に実行します。ここでの選択は、下の検証リストを絞り込むときに使います。</p>
-                <div class="grid grid-cols-3 gap-2 md:gap-3" id="risk-mode-group">
-                    <button type="button" data-mode="堅実" onclick="selectRiskMode('堅実')"
-                        class="risk-mode-btn neon-card rounded-xl py-3.5 text-sm md:text-xs font-bold border border-emerald-500/50 risk-mode-active transition-all min-h-[48px]">
+                <p class="text-sm font-bold text-slate-400">スキャンするモード</p>
+                <p class="text-xs text-slate-500 leading-relaxed">使うモードだけ選べます。複数選ぶと同時に評価し、結果はモード別に分かれます。</p>
+                <div class="flex flex-wrap gap-2">
+                    <button type="button" id="scan-preset-steady" onclick="setScanModes(['堅実'])"
+                        class="text-xs font-bold px-3 py-2 rounded-lg min-h-[36px] bg-slate-800 text-slate-300">
+                        堅実のみ
+                    </button>
+                    <button type="button" id="scan-preset-all" onclick="setScanModes(['堅実', '標準', '積極'])"
+                        class="text-xs font-bold px-3 py-2 rounded-lg min-h-[36px] bg-emerald-800 text-white">
+                        3つ同時
+                    </button>
+                </div>
+                <div class="grid grid-cols-3 gap-2 md:gap-3" id="scan-mode-group">
+                    <button type="button" data-mode="堅実" onclick="toggleScanMode('堅実')" aria-pressed="true"
+                        class="scan-mode-btn neon-card rounded-xl py-3.5 text-sm md:text-xs font-bold border border-emerald-500/50 risk-mode-active transition-all min-h-[48px] text-emerald-400">
                         堅実
                     </button>
-                    <button type="button" data-mode="標準" onclick="selectRiskMode('標準')"
-                        class="risk-mode-btn neon-card rounded-xl py-3.5 text-sm md:text-xs font-bold border border-slate-800 opacity-70 hover:opacity-100 transition-all text-slate-300 min-h-[48px]">
+                    <button type="button" data-mode="標準" onclick="toggleScanMode('標準')" aria-pressed="true"
+                        class="scan-mode-btn neon-card rounded-xl py-3.5 text-sm md:text-xs font-bold border border-emerald-500/50 risk-mode-active transition-all min-h-[48px] text-emerald-400">
                         標準
                     </button>
-                    <button type="button" data-mode="積極" onclick="selectRiskMode('積極')"
-                        class="risk-mode-btn neon-card rounded-xl py-3.5 text-sm md:text-xs font-bold border border-slate-800 opacity-70 hover:opacity-100 transition-all text-slate-300 min-h-[48px]">
+                    <button type="button" data-mode="積極" onclick="toggleScanMode('積極')" aria-pressed="true"
+                        class="scan-mode-btn neon-card rounded-xl py-3.5 text-sm md:text-xs font-bold border border-emerald-500/50 risk-mode-active transition-all min-h-[48px] text-emerald-400">
                         積極
                     </button>
                 </div>
@@ -381,7 +391,7 @@
                 class="rounded-xl border border-slate-800/80 bg-slate-900/30 overflow-hidden">
                 <div id="scan-idle-hint"
                     class="text-sm text-slate-400 text-center py-8 px-5 leading-relaxed">
-                    「3モード同時スキャン」を押すと、堅実・標準・積極の結果が<strong class="text-slate-300">このエリア</strong>に分かれて表示されます。
+                    上でモードを選びスキャンすると、選んだモードの結果が<strong class="text-slate-300">このエリア</strong>に分かれて表示されます。
                 </div>
 
                 <div id="scan-loading" class="hidden py-8 px-5 text-center space-y-4">
@@ -413,7 +423,7 @@
             </div>
 
             <p class="text-sm text-slate-500 leading-relaxed" id="scan-status">
-                JPX日経インデックス400（約400銘柄）を、堅実・標準・積極の3モードで同時スキャンします。結果はモード別に保存されます。
+                選んだモードで JPX日経インデックス400（約400銘柄）をスキャンします。結果はモード別に保存されます。
             </p>
         </section>
 
@@ -434,8 +444,22 @@
             </div>
 
             <div class="flex flex-wrap gap-2 items-center">
-                <span class="text-xs text-slate-500">追跡中の表示モード:</span>
-                <span id="tracking-mode-label" class="text-xs font-bold text-amber-400 mono-font">堅実</span>
+                <span class="text-xs text-slate-500">追跡一覧の表示:</span>
+                <span id="tracking-mode-label" class="sr-only">堅実</span>
+                <div class="flex gap-1" id="tracking-mode-group">
+                    <button type="button" data-mode="堅実" onclick="selectRiskMode('堅実')"
+                        class="tracking-mode-btn text-xs font-bold px-3 py-2 rounded-lg min-h-[36px] bg-amber-900/60 text-amber-300 border border-amber-700/50">
+                        堅実
+                    </button>
+                    <button type="button" data-mode="標準" onclick="selectRiskMode('標準')"
+                        class="tracking-mode-btn text-xs font-bold px-3 py-2 rounded-lg min-h-[36px] bg-slate-800 text-slate-400 border border-slate-700">
+                        標準
+                    </button>
+                    <button type="button" data-mode="積極" onclick="selectRiskMode('積極')"
+                        class="tracking-mode-btn text-xs font-bold px-3 py-2 rounded-lg min-h-[36px] bg-slate-800 text-slate-400 border border-slate-700">
+                        積極
+                    </button>
+                </div>
                 <button type="button" onclick="loadForwardTestDashboard(true)"
                     class="ml-auto text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-lg min-h-[36px]">
                     <i class="fa-solid fa-rotate-right mr-1"></i> 株価・成績を更新
@@ -547,7 +571,9 @@
         let clientUserId = null;
         let anonymousSessionReady = false;
         const RISK_MODES = ['堅実', '標準', '積極'];
+        let selectedScanModes = [...RISK_MODES];
         const WATCHLIST_STORAGE_KEY = 'stellar_watchlist_v1';
+        const SCAN_MODES_STORAGE_KEY = 'stellar_scan_modes_v1';
         const AUTO_VERIFY_STORAGE_KEY = 'stellar_auto_verify_v1';
         const ANONYMOUS_USER_STORAGE_KEY = 'stellar_anonymous_user_v1';
         const JP_STOCK_CODE = /^[0-9A-Z]{4}$/i;
@@ -911,19 +937,103 @@
             }
         }
 
+        function formatScanSelectionLabel(modes) {
+            const ordered = RISK_MODES.filter((mode) => modes.includes(mode));
+            if (ordered.length === RISK_MODES.length) return '3モード同時スキャン';
+            if (ordered.length === 1) return `【${ordered[0]}】をスキャン`;
+            return `${ordered.join('・')}をスキャン`;
+        }
+
+        function orderedScanModes(modes) {
+            return RISK_MODES.filter((mode) => (modes || []).includes(mode));
+        }
+
+        function renderScanModeButtons() {
+            document.querySelectorAll('.scan-mode-btn').forEach((btn) => {
+                const on = selectedScanModes.includes(btn.dataset.mode);
+                btn.classList.toggle('risk-mode-active', on);
+                btn.classList.toggle('border-emerald-500/50', on);
+                btn.classList.toggle('border-slate-800', !on);
+                btn.classList.toggle('opacity-70', !on);
+                btn.classList.toggle('text-emerald-400', on);
+                btn.classList.toggle('text-slate-300', !on);
+                btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+            const allOn = selectedScanModes.length === RISK_MODES.length;
+            const steadyOnly = selectedScanModes.length === 1 && selectedScanModes[0] === '堅実';
+            const allBtn = document.getElementById('scan-preset-all');
+            const steadyBtn = document.getElementById('scan-preset-steady');
+            if (allBtn) {
+                allBtn.classList.toggle('bg-emerald-800', allOn);
+                allBtn.classList.toggle('text-white', allOn);
+                allBtn.classList.toggle('bg-slate-800', !allOn);
+                allBtn.classList.toggle('text-slate-300', !allOn);
+            }
+            if (steadyBtn) {
+                steadyBtn.classList.toggle('bg-emerald-800', steadyOnly);
+                steadyBtn.classList.toggle('text-white', steadyOnly);
+                steadyBtn.classList.toggle('bg-slate-800', !steadyOnly);
+                steadyBtn.classList.toggle('text-slate-300', !steadyOnly);
+            }
+            const label = document.getElementById('scan-btn-label');
+            if (label && !isScanRunning) {
+                label.textContent = formatScanSelectionLabel(selectedScanModes);
+            }
+            const status = document.getElementById('scan-status');
+            if (status && !isScanRunning) {
+                const names = selectedScanModes.join('・');
+                status.textContent = selectedScanModes.length > 1
+                    ? `選択中: ${names} を同時スキャンします。結果はモード別に保存・表示されます。`
+                    : `選択中: 【${names}】だけをスキャンします。結果はこのモードで保存・表示されます。`;
+            }
+        }
+
+        function setScanModes(modes) {
+            const ordered = orderedScanModes(modes);
+            if (ordered.length === 0) return;
+            selectedScanModes = ordered;
+            localStorage.setItem(SCAN_MODES_STORAGE_KEY, JSON.stringify(selectedScanModes));
+            renderScanModeButtons();
+        }
+
+        function toggleScanMode(mode) {
+            if (!RISK_MODES.includes(mode)) return;
+            if (selectedScanModes.includes(mode)) {
+                if (selectedScanModes.length === 1) {
+                    const status = document.getElementById('scan-status');
+                    if (status) status.textContent = 'スキャンするモードは1つ以上選んでください。';
+                    return;
+                }
+                setScanModes(selectedScanModes.filter((item) => item !== mode));
+                return;
+            }
+            setScanModes([...selectedScanModes, mode]);
+        }
+
+        function initScanModeSelection() {
+            try {
+                const saved = JSON.parse(localStorage.getItem(SCAN_MODES_STORAGE_KEY) || 'null');
+                const ordered = orderedScanModes(saved);
+                if (ordered.length) selectedScanModes = ordered;
+            } catch (_) {
+                selectedScanModes = [...RISK_MODES];
+            }
+            renderScanModeButtons();
+        }
+
         function selectRiskMode(mode) {
             selectedRiskMode = mode;
-            document.querySelectorAll('.risk-mode-btn').forEach((btn) => {
+            document.querySelectorAll('.tracking-mode-btn').forEach((btn) => {
                 const isActive = btn.dataset.mode === mode;
-                btn.classList.toggle('risk-mode-active', isActive);
-                btn.classList.toggle('border-emerald-500/50', isActive);
-                btn.classList.toggle('border-slate-800', !isActive);
-                btn.classList.toggle('opacity-70', !isActive);
-                btn.classList.toggle('text-emerald-400', isActive);
-                btn.classList.toggle('text-slate-300', !isActive);
+                btn.classList.toggle('bg-amber-900/60', isActive);
+                btn.classList.toggle('text-amber-300', isActive);
+                btn.classList.toggle('border-amber-700/50', isActive);
+                btn.classList.toggle('bg-slate-800', !isActive);
+                btn.classList.toggle('text-slate-400', !isActive);
+                btn.classList.toggle('border-slate-700', !isActive);
             });
-            document.getElementById('scan-status').textContent =
-                `検証リストの表示: 【${mode}】。スキャンは堅実・標準・積極を同時に実行し、結果をモード別に保存します。`;
+            const modeLabel = document.getElementById('tracking-mode-label');
+            if (modeLabel) modeLabel.textContent = mode;
             loadForwardTestDashboard(false);
         }
 
@@ -1175,13 +1285,17 @@
             document.getElementById('scan-results-wrap').classList.add('hidden');
         }
 
-        function showScanLoading() {
+        function showScanLoading(modes) {
+            const ordered = orderedScanModes(modes).length ? orderedScanModes(modes) : selectedScanModes;
             document.getElementById('scan-idle-hint').classList.add('hidden');
             document.getElementById('scan-loading').classList.remove('hidden');
             document.getElementById('scan-results-wrap').classList.add('hidden');
-            document.getElementById('scan-loading-title').textContent = '堅実・標準・積極を同時スキャン中...';
-            document.getElementById('scan-loading-desc').textContent =
-                '約400銘柄の株価を1回取得し、3つのモードで同時に評価しています。完了までこの画面を離れずにお待ちください。';
+            document.getElementById('scan-loading-title').textContent = ordered.length > 1
+                ? `${ordered.join('・')}を同時スキャン中...`
+                : `【${ordered[0]}】をスキャン中...`;
+            document.getElementById('scan-loading-desc').textContent = ordered.length > 1
+                ? `約400銘柄の株価を1回取得し、${ordered.join('・')}を同時に評価しています。完了までこの画面を離れずにお待ちください。`
+                : `約400銘柄を【${ordered[0]}】の条件で評価しています。完了までこの画面を離れずにお待ちください。`;
         }
 
         function showScanResults() {
@@ -1212,8 +1326,13 @@
             const label = document.getElementById('scan-progress-label');
 
             if (data.status === 'running') {
-                showScanLoading();
-                label.textContent = `3モード処理中... ${data.total || 400} 銘柄`;
+                const runningModes = orderedScanModes(data.modes).length
+                    ? orderedScanModes(data.modes)
+                    : selectedScanModes;
+                showScanLoading(runningModes);
+                label.textContent = runningModes.length > 1
+                    ? `${runningModes.join('・')}を処理中... ${data.total || 400} 銘柄`
+                    : `【${runningModes[0]}】処理中... ${data.total || 400} 銘柄`;
                 return;
             }
 
@@ -1222,7 +1341,10 @@
             if (data.status === 'completed') {
                 const elapsed = data.elapsed_seconds != null ? ` / ${data.elapsed_seconds}秒` : '';
                 const byMode = data.results_by_mode || {};
-                const parts = RISK_MODES.map((mode) => {
+                const visibleModes = orderedScanModes(data.modes).length
+                    ? orderedScanModes(data.modes)
+                    : orderedScanModes(Object.keys(byMode));
+                const parts = visibleModes.map((mode) => {
                     const block = byMode[mode] || {};
                     return `${mode} ${block.buy_count || 0}`;
                 });
@@ -1304,21 +1426,30 @@
             showScanResults();
 
             const blocks = resultsByMode || {};
-            const totalHits = RISK_MODES.reduce((sum, mode) => {
+            const visibleModes = orderedScanModes(options.modes).length
+                ? orderedScanModes(options.modes)
+                : (orderedScanModes(Object.keys(blocks)).length
+                    ? orderedScanModes(Object.keys(blocks))
+                    : selectedScanModes);
+            const totalHits = visibleModes.reduce((sum, mode) => {
                 const hits = (blocks[mode] && blocks[mode].buy_signals) || [];
                 return sum + hits.length;
             }, 0);
 
             if (totalHits === 0) {
                 emptyEl.classList.remove('hidden');
-                emptyEl.innerHTML =
-                    '今回の同時スキャンでは、どのモードでも BUY SIGNAL は検出されませんでした。';
+                emptyEl.textContent = visibleModes.length === 1
+                    ? `【${visibleModes[0]}】では BUY SIGNAL は検出されませんでした。`
+                    : '選択したモードでは BUY SIGNAL は検出されませんでした。';
             } else {
                 emptyEl.classList.add('hidden');
             }
 
-            gridEl.classList.remove('hidden');
-            RISK_MODES.forEach((mode) => {
+            gridEl.classList.remove('hidden', 'xl:grid-cols-3', 'md:grid-cols-2');
+            gridEl.classList.add('grid', 'grid-cols-1');
+            if (visibleModes.length === 2) gridEl.classList.add('md:grid-cols-2');
+            if (visibleModes.length >= 3) gridEl.classList.add('xl:grid-cols-3');
+            visibleModes.forEach((mode) => {
                 const style = SCAN_MODE_STYLES[mode] || SCAN_MODE_STYLES['標準'];
                 const block = blocks[mode] || {};
                 const hits = block.buy_signals || [];
@@ -1375,16 +1506,24 @@
                 return;
             }
 
-            setScanBusy(true);
             const scanStatus = document.getElementById('scan-status');
+            const scanModes = orderedScanModes(selectedScanModes);
+            if (scanModes.length === 0) {
+                scanStatus.textContent = 'スキャンするモードを1つ以上選んでください。';
+                return;
+            }
+
+            setScanBusy(true);
             const btnLabel = document.getElementById('scan-btn-label');
             const btnIcon = document.getElementById('scan-btn-icon');
 
             btnLabel.textContent = 'スキャン中...';
             btnIcon.className = 'fa-solid fa-spinner fa-spin text-base';
-            scanStatus.textContent = '堅実・標準・積極の3モードで JPX400 約400銘柄を同時スキャン中...';
-            showScanLoading();
-            updateScanProgressUI({ status: 'running', total: 400, modes: RISK_MODES });
+            scanStatus.textContent = scanModes.length > 1
+                ? `${scanModes.join('・')}で JPX400 約400銘柄を同時スキャン中...`
+                : `【${scanModes[0]}】で JPX400 約400銘柄をスキャン中...`;
+            showScanLoading(scanModes);
+            updateScanProgressUI({ status: 'running', total: 400, modes: scanModes });
 
             try {
                 const autoVerify = isAutoVerifyEnabled();
@@ -1392,7 +1531,7 @@
                     method: 'POST',
                     headers: authHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({
-                        modes: RISK_MODES,
+                        modes: scanModes,
                         auto_verify: autoVerify,
                     }),
                 });
@@ -1403,7 +1542,10 @@
 
                 const autoVerifyApplied = data.auto_verify !== false && autoVerify;
                 updateScanProgressUI(data);
-                renderScanHitsByMode(data.results_by_mode || {}, { autoVerify: autoVerifyApplied });
+                renderScanHitsByMode(data.results_by_mode || {}, {
+                    autoVerify: autoVerifyApplied,
+                    modes: data.modes || scanModes,
+                });
                 scanStatus.textContent = data.message || `JPX400 同時スキャン完了: BUY SIGNAL ${data.buy_count || 0} 件`;
                 if (autoVerify) {
                     try {
@@ -1422,7 +1564,7 @@
                 scanStatus.textContent = `スキャン失敗: ${error.message}`;
             } finally {
                 setScanBusy(false);
-                btnLabel.textContent = '3モード同時スキャン';
+                btnLabel.textContent = formatScanSelectionLabel(selectedScanModes);
                 btnIcon.className = 'fa-solid fa-radar text-base';
             }
         }
@@ -1611,6 +1753,7 @@
             }
         }
 
+        initScanModeSelection();
         selectRiskMode('堅実');
         initAutoVerifyToggle();
         loadWatchlist();
