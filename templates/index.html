@@ -119,6 +119,13 @@
             scrollbar-color: #334155 transparent;
         }
 
+        .scan-mode-column {
+            max-height: min(62vh, 560px);
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: #334155 transparent;
+        }
+
         .typing-cursor::after {
             content: '▋';
             animation: blink 0.9s step-end infinite;
@@ -331,12 +338,13 @@
                 </div>
                 <div class="flex-1 min-w-0">
                     <h2 class="section-title text-emerald-400">③ JPX400 テクニカルスキャン</h2>
-                    <p class="section-desc">主要400銘柄のチャートをリアルタイムでスキャンし、BUY SIGNALをその場で検出します。決算発表の前後1週間に該当する銘柄は、決算跨ぎリスク回避のため自動的に除外します。</p>
+                    <p class="section-desc">主要400銘柄のチャートを1回取得し、堅実・標準・積極の3モードを同時に評価します。ヒットした銘柄はモード別に保存・表示します。決算発表の前後1週間に該当する銘柄は、決算跨ぎリスク回避のため自動的に除外します。</p>
                 </div>
             </div>
 
             <div class="space-y-3">
-                <p class="text-sm font-bold text-slate-400">リスク許容度モード</p>
+                <p class="text-sm font-bold text-slate-400">検証リストの表示モード</p>
+                <p class="text-xs text-slate-500 leading-relaxed">スキャンは堅実・標準・積極を同時に実行します。ここでの選択は、下の検証リストを絞り込むときに使います。</p>
                 <div class="grid grid-cols-3 gap-2 md:gap-3" id="risk-mode-group">
                     <button type="button" data-mode="堅実" onclick="selectRiskMode('堅実')"
                         class="risk-mode-btn neon-card rounded-xl py-3.5 text-sm md:text-xs font-bold border border-emerald-500/50 risk-mode-active transition-all min-h-[48px]">
@@ -365,7 +373,7 @@
             <button type="button" id="scan-btn" onclick="startJpx400Scan()"
                 class="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-400 text-slate-900 font-extrabold py-4 px-4 rounded-xl shadow-[0_4px_15px_rgba(16,185,129,0.25)] transition-all duration-200 text-base md:text-sm tracking-wide flex items-center justify-center gap-2.5 cursor-pointer border-t border-emerald-400/20 disabled:cursor-not-allowed min-h-[52px]">
                 <i class="fa-solid fa-radar text-base" id="scan-btn-icon"></i>
-                <span id="scan-btn-label">JPX400 スキャン開始</span>
+                <span id="scan-btn-label">3モード同時スキャン</span>
             </button>
 
             <!-- インライン: ローディング + 結果 -->
@@ -373,7 +381,7 @@
                 class="rounded-xl border border-slate-800/80 bg-slate-900/30 overflow-hidden">
                 <div id="scan-idle-hint"
                     class="text-sm text-slate-400 text-center py-8 px-5 leading-relaxed">
-                    リスクモードを選び「スキャン開始」を押すと、<strong class="text-slate-300">このエリア</strong>に進捗と結果が表示されます。
+                    「3モード同時スキャン」を押すと、堅実・標準・積極の結果が<strong class="text-slate-300">このエリア</strong>に分かれて表示されます。
                 </div>
 
                 <div id="scan-loading" class="hidden py-8 px-5 text-center space-y-4">
@@ -397,15 +405,15 @@
                         <span id="scan-progress-label" class="text-sm text-slate-400 mono-font">待機中</span>
                     </div>
                     <div id="scan-hits-empty"
-                        class="text-sm text-slate-400 text-center py-10 px-5 leading-relaxed">
+                        class="hidden text-sm text-slate-400 text-center py-6 px-5 leading-relaxed">
                         結果がここに表示されます。
                     </div>
-                    <div id="scan-hits-list" class="hidden scan-results-scroll p-3 md:p-4 space-y-3"></div>
+                    <div id="scan-hits-by-mode" class="hidden grid grid-cols-1 xl:grid-cols-3 gap-3 p-3 md:p-4"></div>
                 </div>
             </div>
 
             <p class="text-sm text-slate-500 leading-relaxed" id="scan-status">
-                JPX日経インデックス400（約400銘柄）をリアルタイムスキャンし、押し目・順張りブレイクを検出します。
+                JPX日経インデックス400（約400銘柄）を、堅実・標準・積極の3モードで同時スキャンします。結果はモード別に保存されます。
             </p>
         </section>
 
@@ -915,7 +923,7 @@
                 btn.classList.toggle('text-slate-300', !isActive);
             });
             document.getElementById('scan-status').textContent =
-                `選択中: 【${mode}】モード。JPX400（約400銘柄）リアルタイムスキャンに適用されます。`;
+                `検証リストの表示: 【${mode}】。スキャンは堅実・標準・積極を同時に実行し、結果をモード別に保存します。`;
             loadForwardTestDashboard(false);
         }
 
@@ -1111,7 +1119,7 @@
                         ticker,
                         name: hit.name || null,
                         entry_price: Number(entryPrice),
-                        risk_mode: selectedRiskMode,
+                        risk_mode: hit.risk_mode || selectedRiskMode,
                         preset_matched: hit.preset_matched || null,
                     }),
                 });
@@ -1167,13 +1175,13 @@
             document.getElementById('scan-results-wrap').classList.add('hidden');
         }
 
-        function showScanLoading(mode) {
+        function showScanLoading() {
             document.getElementById('scan-idle-hint').classList.add('hidden');
             document.getElementById('scan-loading').classList.remove('hidden');
             document.getElementById('scan-results-wrap').classList.add('hidden');
-            document.getElementById('scan-loading-title').textContent = `【${mode}】JPX400 をスキャン中...`;
+            document.getElementById('scan-loading-title').textContent = '堅実・標準・積極を同時スキャン中...';
             document.getElementById('scan-loading-desc').textContent =
-                '約400銘柄を並列処理しています。完了までこの画面を離れずにお待ちください。';
+                '約400銘柄の株価を1回取得し、3つのモードで同時に評価しています。完了までこの画面を離れずにお待ちください。';
         }
 
         function showScanResults() {
@@ -1182,12 +1190,30 @@
             document.getElementById('scan-results-wrap').classList.remove('hidden');
         }
 
+        const SCAN_MODE_STYLES = {
+            '堅実': {
+                border: 'border-emerald-800/70',
+                title: 'text-emerald-400',
+                header: 'bg-emerald-950/30',
+            },
+            '標準': {
+                border: 'border-cyan-800/70',
+                title: 'text-cyan-400',
+                header: 'bg-cyan-950/30',
+            },
+            '積極': {
+                border: 'border-amber-800/70',
+                title: 'text-amber-400',
+                header: 'bg-amber-950/25',
+            },
+        };
+
         function updateScanProgressUI(data) {
             const label = document.getElementById('scan-progress-label');
 
             if (data.status === 'running') {
-                showScanLoading(data.mode || selectedRiskMode);
-                label.textContent = `処理中... ${data.total || 400} 銘柄`;
+                showScanLoading();
+                label.textContent = `3モード処理中... ${data.total || 400} 銘柄`;
                 return;
             }
 
@@ -1195,7 +1221,14 @@
 
             if (data.status === 'completed') {
                 const elapsed = data.elapsed_seconds != null ? ` / ${data.elapsed_seconds}秒` : '';
-                let progressText = `BUY SIGNAL ${data.buy_count || 0} 件（${data.mode || selectedRiskMode}${elapsed}）`;
+                const byMode = data.results_by_mode || {};
+                const parts = RISK_MODES.map((mode) => {
+                    const block = byMode[mode] || {};
+                    return `${mode} ${block.buy_count || 0}`;
+                });
+                let progressText = parts.length
+                    ? `BUY SIGNAL ${parts.join(' / ')}${elapsed}`
+                    : `BUY SIGNAL ${data.buy_count || 0} 件${elapsed}`;
                 if ((data.earnings_filtered_count || 0) > 0) {
                     progressText += ` / 決算前後除外 ${data.earnings_filtered_count} 件`;
                 }
@@ -1211,73 +1244,107 @@
             label.textContent = '待機中';
         }
 
-        function renderScanHits(hits, options = {}) {
-            const emptyEl = document.getElementById('scan-hits-empty');
-            const listEl = document.getElementById('scan-hits-list');
+        function buildHitCard(hit, options = {}) {
             const autoVerify = Boolean(options.autoVerify);
-            listEl.innerHTML = '';
+            const preset = hit.preset_matched || 'none';
+            const label = hit.signal_label || (preset === 'oshieme' ? '押し目シグナル' : preset === 'junbari' ? '順張りブレイク' : 'シグナル');
+            const code = displayTickerCode(hit.ticker || '');
+            const displayName = hit.name || code;
+            const alreadyRegistered = Boolean(hit.auto_registered) || Boolean(hit.track_id);
+            const row = document.createElement('div');
+            row.className = 'hit-card flex flex-col gap-3 bg-slate-900/50 border border-slate-800 rounded-xl p-3';
+            const verifyButtonHtml = alreadyRegistered
+                ? `<button type="button" data-action="verify" disabled
+                        class="w-full bg-slate-700 text-slate-200 font-bold px-3 py-3 rounded-xl text-sm min-h-[44px] cursor-default">
+                        <i class="fa-solid fa-check mr-1"></i> 登録済
+                    </button>`
+                : `<button type="button" data-action="verify"
+                        class="w-full bg-amber-800 hover:bg-amber-700 disabled:bg-slate-700 text-white font-bold px-3 py-3 rounded-xl text-sm transition-colors min-h-[44px]">
+                        <i class="fa-solid fa-flask mr-1.5"></i> 検証リストに追加
+                    </button>`;
+            row.innerHTML = `
+                <div class="min-w-0 space-y-2">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <span class="font-bold text-slate-100 mono-font text-base">${escapeHtml(code)}</span>
+                        <span class="text-xs px-2.5 py-1 rounded border font-bold ${signalBadgeClass(preset)}">${escapeHtml(label)}</span>
+                        ${alreadyRegistered ? '<span class="text-[10px] font-bold text-amber-400 bg-amber-950/50 border border-amber-800/40 px-2 py-0.5 rounded">検証リスト登録済</span>' : ''}
+                        ${autoVerify && !alreadyRegistered ? '<span class="text-[10px] font-bold text-pink-400 bg-pink-950/40 border border-pink-800/40 px-2 py-0.5 rounded">自動登録失敗</span>' : ''}
+                    </div>
+                    <div class="text-sm font-semibold text-slate-100 leading-snug">${escapeHtml(displayName)}</div>
+                    <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400 mono-font">
+                        <span>RSI <strong class="text-emerald-400 font-bold">${formatRsi(hit.rsi)}</strong></span>
+                        <span>終値 <strong class="text-slate-200 font-bold">${formatPrice(hit.current_price)}</strong> 円</span>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    ${verifyButtonHtml}
+                    <button type="button" data-action="ai"
+                        class="w-full bg-cyan-800 hover:bg-cyan-700 disabled:bg-slate-700 text-white font-bold px-3 py-3 rounded-xl text-sm transition-colors min-h-[44px]">
+                        <i class="fa-solid fa-wand-magic-sparkles mr-1.5"></i> AI診断
+                    </button>
+                </div>
+            `;
+            row.querySelector('[data-action="ai"]').addEventListener('click', () => {
+                diagnoseHitWithAi(hit);
+            });
+            const verifyBtn = row.querySelector('[data-action="verify"]');
+            if (verifyBtn && !alreadyRegistered) {
+                verifyBtn.addEventListener('click', (event) => {
+                    registerToVerifyList(hit, event.currentTarget);
+                });
+            }
+            return row;
+        }
+
+        function renderScanHitsByMode(resultsByMode, options = {}) {
+            const emptyEl = document.getElementById('scan-hits-empty');
+            const gridEl = document.getElementById('scan-hits-by-mode');
+            const autoVerify = Boolean(options.autoVerify);
+            gridEl.innerHTML = '';
             showScanResults();
 
-            if (!hits || hits.length === 0) {
+            const blocks = resultsByMode || {};
+            const totalHits = RISK_MODES.reduce((sum, mode) => {
+                const hits = (blocks[mode] && blocks[mode].buy_signals) || [];
+                return sum + hits.length;
+            }, 0);
+
+            if (totalHits === 0) {
                 emptyEl.classList.remove('hidden');
                 emptyEl.innerHTML =
-                    '今回のスキャンでは BUY SIGNAL は検出されませんでした。<br class="hidden sm:inline">別モードで再スキャンするか、後日もう一度お試しください。';
-                listEl.classList.add('hidden');
-                return;
+                    '今回の同時スキャンでは、どのモードでも BUY SIGNAL は検出されませんでした。';
+            } else {
+                emptyEl.classList.add('hidden');
             }
 
-            emptyEl.classList.add('hidden');
-            listEl.classList.remove('hidden');
-
-            hits.forEach((hit) => {
-                const preset = hit.preset_matched || 'none';
-                const label = hit.signal_label || (preset === 'oshieme' ? '押し目シグナル' : preset === 'junbari' ? '順張りブレイク' : 'シグナル');
-                const code = displayTickerCode(hit.ticker || '');
-                const displayName = hit.name || code;
-                const alreadyRegistered = Boolean(hit.auto_registered) || Boolean(hit.track_id);
-                const row = document.createElement('div');
-                row.className = 'hit-card flex flex-col sm:flex-row sm:items-center gap-4 bg-slate-900/50 border border-slate-800 rounded-xl';
-                const verifyButtonHtml = alreadyRegistered
-                    ? `<button type="button" data-action="verify" disabled
-                            class="w-full sm:w-auto bg-slate-700 text-slate-200 font-bold px-4 py-3.5 rounded-xl text-sm min-h-[48px] cursor-default">
-                            <i class="fa-solid fa-check mr-1"></i> 登録済
-                        </button>`
-                    : `<button type="button" data-action="verify"
-                            class="w-full sm:w-auto bg-amber-800 hover:bg-amber-700 disabled:bg-slate-700 text-white font-bold px-4 py-3.5 rounded-xl text-sm transition-colors min-h-[48px]">
-                            <i class="fa-solid fa-flask mr-1.5"></i> 🧪 検証リストに追加
-                        </button>`;
-                row.innerHTML = `
-                    <div class="flex-1 min-w-0 space-y-2">
-                        <div class="flex flex-wrap items-center gap-2">
-                            <span class="font-bold text-slate-100 mono-font text-base">${escapeHtml(code)}</span>
-                            <span class="text-xs px-2.5 py-1 rounded border font-bold ${signalBadgeClass(preset)}">${escapeHtml(label)}</span>
-                            ${alreadyRegistered ? '<span class="text-[10px] font-bold text-amber-400 bg-amber-950/50 border border-amber-800/40 px-2 py-0.5 rounded">検証リスト登録済</span>' : ''}
-                            ${autoVerify && !alreadyRegistered ? '<span class="text-[10px] font-bold text-pink-400 bg-pink-950/40 border border-pink-800/40 px-2 py-0.5 rounded">自動登録失敗</span>' : ''}
-                        </div>
-                        <div class="text-base md:text-sm font-semibold text-slate-100 leading-snug">${escapeHtml(displayName)}</div>
-                        <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm md:text-xs text-slate-400 mono-font">
-                            <span>RSI <strong class="text-emerald-400 font-bold">${formatRsi(hit.rsi)}</strong></span>
-                            <span>終値 <strong class="text-slate-200 font-bold">${formatPrice(hit.current_price)}</strong> 円</span>
-                        </div>
-                    </div>
-                    <div class="flex flex-col sm:flex-row gap-2 shrink-0 w-full sm:w-auto">
-                        ${verifyButtonHtml}
-                        <button type="button" data-action="ai"
-                            class="w-full sm:w-auto bg-cyan-800 hover:bg-cyan-700 disabled:bg-slate-700 text-white font-bold px-5 py-3.5 rounded-xl text-sm transition-colors min-h-[48px]">
-                            <i class="fa-solid fa-wand-magic-sparkles mr-1.5"></i> AI診断
-                        </button>
+            gridEl.classList.remove('hidden');
+            RISK_MODES.forEach((mode) => {
+                const style = SCAN_MODE_STYLES[mode] || SCAN_MODE_STYLES['標準'];
+                const block = blocks[mode] || {};
+                const hits = block.buy_signals || [];
+                const column = document.createElement('section');
+                column.className = `rounded-xl border ${style.border} bg-slate-950/40 overflow-hidden flex flex-col min-w-0`;
+                column.innerHTML = `
+                    <div class="px-3 py-3 border-b border-slate-800/80 ${style.header} flex items-center justify-between gap-2">
+                        <h4 class="text-sm font-bold ${style.title}">${escapeHtml(mode)}</h4>
+                        <span class="text-xs font-bold text-slate-300 mono-font">${hits.length} 件</span>
                     </div>
                 `;
-                row.querySelector('[data-action="ai"]').addEventListener('click', () => {
-                    diagnoseHitWithAi(hit);
-                });
-                const verifyBtn = row.querySelector('[data-action="verify"]');
-                if (verifyBtn && !alreadyRegistered) {
-                    verifyBtn.addEventListener('click', (event) => {
-                        registerToVerifyList(hit, event.currentTarget);
+                const list = document.createElement('div');
+                list.className = 'scan-mode-column p-3 space-y-3';
+                if (hits.length === 0) {
+                    const empty = document.createElement('p');
+                    empty.className = 'text-sm text-slate-500 text-center py-8 leading-relaxed';
+                    empty.textContent = 'このモードの BUY SIGNAL はありません。';
+                    list.appendChild(empty);
+                } else {
+                    hits.forEach((hit) => {
+                        const tagged = Object.assign({}, hit, { risk_mode: hit.risk_mode || mode, mode: hit.mode || mode });
+                        list.appendChild(buildHitCard(tagged, { autoVerify }));
                     });
                 }
-                listEl.appendChild(row);
+                column.appendChild(list);
+                gridEl.appendChild(column);
             });
 
             document.getElementById('scan-inline-zone').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1287,13 +1354,14 @@
             const ticker = hit?.ticker || hit;
             const name = hit?.name || '';
             const code = extractStockCode(ticker);
+            const mode = hit?.risk_mode || hit?.mode || selectedRiskMode;
             if (!code) return;
             await sendToAiDiagnosis({
                 query: code,
                 code,
-                mode: selectedRiskMode,
-                screenData: hitToScreenData(hit, code, selectedRiskMode),
-                displayText: `【${selectedRiskMode}】${displayTickerCode(ticker)} ${name || ''} を AI 診断`.trim(),
+                mode,
+                screenData: hitToScreenData(hit, code, mode),
+                displayText: `【${mode}】${displayTickerCode(ticker)} ${name || ''} を AI 診断`.trim(),
             });
         }
 
@@ -1314,9 +1382,9 @@
 
             btnLabel.textContent = 'スキャン中...';
             btnIcon.className = 'fa-solid fa-spinner fa-spin text-base';
-            scanStatus.textContent = `【${selectedRiskMode}】JPX400 約400銘柄をリアルタイムスキャン中...`;
-            showScanLoading(selectedRiskMode);
-            updateScanProgressUI({ status: 'running', total: 400, mode: selectedRiskMode });
+            scanStatus.textContent = '堅実・標準・積極の3モードで JPX400 約400銘柄を同時スキャン中...';
+            showScanLoading();
+            updateScanProgressUI({ status: 'running', total: 400, modes: RISK_MODES });
 
             try {
                 const autoVerify = isAutoVerifyEnabled();
@@ -1324,7 +1392,7 @@
                     method: 'POST',
                     headers: authHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({
-                        mode: selectedRiskMode,
+                        modes: RISK_MODES,
                         auto_verify: autoVerify,
                     }),
                 });
@@ -1335,8 +1403,8 @@
 
                 const autoVerifyApplied = data.auto_verify !== false && autoVerify;
                 updateScanProgressUI(data);
-                renderScanHits(data.buy_signals || [], { autoVerify: autoVerifyApplied });
-                scanStatus.textContent = data.message || `JPX400 スキャン完了: BUY SIGNAL ${data.buy_count || 0} 件`;
+                renderScanHitsByMode(data.results_by_mode || {}, { autoVerify: autoVerifyApplied });
+                scanStatus.textContent = data.message || `JPX400 同時スキャン完了: BUY SIGNAL ${data.buy_count || 0} 件`;
                 if (autoVerify) {
                     try {
                         await loadForwardTestDashboard(false);
@@ -1350,11 +1418,11 @@
                 updateScanProgressUI({ status: 'failed', error: error.message });
                 document.getElementById('scan-hits-empty').classList.remove('hidden');
                 document.getElementById('scan-hits-empty').textContent = `スキャンに失敗しました: ${error.message}`;
-                document.getElementById('scan-hits-list').classList.add('hidden');
+                document.getElementById('scan-hits-by-mode').classList.add('hidden');
                 scanStatus.textContent = `スキャン失敗: ${error.message}`;
             } finally {
                 setScanBusy(false);
-                btnLabel.textContent = 'JPX400 スキャン開始';
+                btnLabel.textContent = '3モード同時スキャン';
                 btnIcon.className = 'fa-solid fa-radar text-base';
             }
         }

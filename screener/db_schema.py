@@ -23,6 +23,7 @@ def init_schema(conn: Connection) -> None:
     # カラムを足さないため、user_id インデックス作成でトランザクション全体が失敗していた）。
     _migrate_user_columns(conn)
     _migrate_signal_tracks(conn)
+    _migrate_scan_mode_columns(conn)
 
 
 def ensure_user_id_columns(conn: Connection) -> None:
@@ -52,7 +53,9 @@ def _init_schema_sqlite(conn: Connection) -> None:
             processed        INTEGER DEFAULT 0,
             buy_signal_count INTEGER DEFAULT 0,
             sent_line        INTEGER DEFAULT 0,
-            error_message    TEXT
+            error_message    TEXT,
+            risk_mode        TEXT,
+            scan_group_id    TEXT
         )
     """)
     execute(conn, """
@@ -60,6 +63,7 @@ def _init_schema_sqlite(conn: Connection) -> None:
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id          TEXT,
             scan_id          TEXT NOT NULL,
+            risk_mode        TEXT,
             ticker           TEXT NOT NULL,
             name             TEXT NOT NULL,
             current_price    REAL,
@@ -143,7 +147,9 @@ def _init_schema_postgresql(conn: Connection) -> None:
             processed        INTEGER DEFAULT 0,
             buy_signal_count INTEGER DEFAULT 0,
             sent_line        INTEGER DEFAULT 0,
-            error_message    TEXT
+            error_message    TEXT,
+            risk_mode        TEXT,
+            scan_group_id    TEXT
         )
     """)
     execute(conn, """
@@ -151,6 +157,7 @@ def _init_schema_postgresql(conn: Connection) -> None:
             id               SERIAL PRIMARY KEY,
             user_id          TEXT,
             scan_id          TEXT NOT NULL,
+            risk_mode        TEXT,
             ticker           TEXT NOT NULL,
             name             TEXT NOT NULL,
             current_price    DOUBLE PRECISION,
@@ -303,6 +310,24 @@ def _migrate_signal_tracks(conn: Connection) -> None:
                 """,
                 (horizon, label),
             )
+
+
+def _migrate_scan_mode_columns(conn: Connection) -> None:
+    """既存 DB にモード別保存用カラムを追加する。"""
+    additions = (
+        ("scan_sessions", "risk_mode", "TEXT"),
+        ("scan_sessions", "scan_group_id", "TEXT"),
+        ("scan_results", "risk_mode", "TEXT"),
+    )
+    for table, column, col_type in additions:
+        if not _column_exists(conn, table, column):
+            execute(conn, f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+    for sql in (
+        "CREATE INDEX IF NOT EXISTS idx_sr_risk_mode ON scan_results(risk_mode)",
+        "CREATE INDEX IF NOT EXISTS idx_ss_scan_group ON scan_sessions(scan_group_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ss_risk_mode ON scan_sessions(risk_mode)",
+    ):
+        execute(conn, sql)
 
 
 def _migrate_user_columns(conn: Connection) -> None:

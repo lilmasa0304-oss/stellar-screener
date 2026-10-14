@@ -300,6 +300,75 @@ def test_init_db_adds_missing_user_id_columns():
             for table in ("scan_sessions", "scan_results", "signal_tracks"):
                 cols = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
                 assert "user_id" in cols, f"{table} に user_id が追加されていません"
+            session_cols = [row[1] for row in conn.execute("PRAGMA table_info(scan_sessions)")]
+            result_cols = [row[1] for row in conn.execute("PRAGMA table_info(scan_results)")]
+            assert "risk_mode" in session_cols
+            assert "scan_group_id" in session_cols
+            assert "risk_mode" in result_cols
+
+
+def _sample_hit(ticker: str, name: str, risk_mode: str) -> dict:
+    return {
+        "ticker": ticker,
+        "name": name,
+        "risk_mode": risk_mode,
+        "current_price": 1000.0,
+        "change_percent": 1.0,
+        "buy_signal": True,
+        "is_prime_entry": False,
+        "triggered": True,
+        "signals": [],
+        "rsi": 20.0,
+        "ma25": 990.0,
+        "macd": 1.0,
+        "macd_signal": 0.5,
+        "macd_hist": 0.5,
+        "macd_crossover": False,
+        "macd_pre_crossover": False,
+        "ma25_uptrend": True,
+    }
+
+
+def test_scan_results_are_stored_and_loaded_per_mode():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_file = Path(tmp) / "modes.db"
+        with env_override(
+            DATABASE_URL=f"sqlite:///{db_file.as_posix()}",
+            RENDER=None,
+            SQLITE_TEST_MODE="1",
+        ):
+            storage.refresh_db_path()
+            assert storage.init_db() is True
+            storage.create_session(
+                "scan_steady",
+                "jpx400_堅実",
+                3,
+                user_id="user-1",
+                risk_mode="堅実",
+                scan_group_id="group-1",
+            )
+            storage.create_session(
+                "scan_aggressive",
+                "jpx400_積極",
+                3,
+                user_id="user-1",
+                risk_mode="積極",
+                scan_group_id="group-1",
+            )
+            storage.save_result("scan_steady", _sample_hit("7203.T", "トヨタ", "堅実"), user_id="user-1")
+            storage.save_result("scan_aggressive", _sample_hit("6758.T", "ソニー", "積極"), user_id="user-1")
+            storage.complete_session("scan_steady", 1, False)
+            storage.complete_session("scan_aggressive", 1, False)
+
+            grouped = storage.list_sessions_by_group("group-1", user_id="user-1")
+            assert {row["risk_mode"] for row in grouped} == {"堅実", "積極"}
+
+            steady = storage.get_results("scan_steady", buy_signal_only=True, user_id="user-1", risk_mode="堅実")
+            aggressive = storage.get_history_buy_signals(limit=10, user_id="user-1", risk_mode="積極")
+            assert [row["ticker"] for row in steady] == ["7203.T"]
+            assert steady[0]["risk_mode"] == "堅実"
+            assert [row["ticker"] for row in aggressive] == ["6758.T"]
+            assert aggressive[0]["risk_mode"] == "積極"
 
 
 def test_storage_info_local():
@@ -319,5 +388,6 @@ if __name__ == "__main__":
     test_register_normalizes_ticker_and_blocks_same_day_mode_duplicate()
     test_cleanup_duplicate_signal_tracks_keeps_newer_and_normalizes()
     test_init_db_adds_missing_user_id_columns()
+    test_scan_results_are_stored_and_loaded_per_mode()
     test_storage_info_local()
     print("ok")

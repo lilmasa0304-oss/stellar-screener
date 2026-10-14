@@ -7,7 +7,7 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from dotenv import load_dotenv
 
@@ -99,11 +99,14 @@ logger = logging.getLogger(__name__)
 _jpx400_progress: Dict[str, Any] = {
     "status":    "idle",   # idle | running | completed | failed
     "scan_id":   None,
+    "scan_group_id": None,
     "mode":      None,
+    "modes":     [],
     "processed": 0,
     "total":     0,
     "buy_count": 0,
     "buy_signals": [],
+    "results_by_mode": {},
     "error":     None,
     "elapsed_seconds": None,
 }
@@ -311,6 +314,10 @@ def coerce_auto_verify(value: Any, default: bool = True) -> bool:
 
 class MarketScanPayload(BaseModel):
     mode: Optional[str] = Field("堅実", description="リスクモード（堅実 / 標準 / 積極）")
+    modes: Optional[List[str]] = Field(
+        None,
+        description="同時スキャンするモード。未指定時は堅実・標準・積極の3つ",
+    )
     auto_verify: bool = Field(
         True,
         description="検出銘柄を検証リストへ自動登録する",
@@ -586,184 +593,250 @@ def _decorate_buy_signal_rows(results: List[Dict[str, Any]]) -> List[Dict[str, A
     return decorated
 
 
+def _ordered_scan_modes(modes: Optional[Sequence[str]]) -> List[str]:
+    """RISK_MODES の定義順で、有効なモードだけを残す。"""
+    if not modes:
+        return []
+    requested = {str(mode).strip() for mode in modes if mode}
+    return [mode for mode in RISK_MODES if mode in requested]
+
+
+def _resolve_dashboard_scan_modes(requested: Optional[Sequence[str]]) -> List[str]:
+    """ダッシュボードのスキャン対象。未指定時は3モードすべて。"""
+    selected = _ordered_scan_modes(requested)
+    return selected or list(RISK_MODES.keys())
+
+
 def _build_scan_completion_message(
-    mode: str,
-    buy_count: int,
+    mode_summaries: Sequence[tuple],
     total: int,
     elapsed: float,
-    earnings_filtered_count: int,
     earnings_filter_enabled: bool,
 ) -> str:
-    base = (
-        f"【{mode}】JPX400 スキャン完了: "
-        f"BUY SIGNAL {buy_count} 件 / {total} 銘柄（{elapsed}秒）"
-    )
-    if earnings_filter_enabled and earnings_filtered_count > 0:
-        base += (
-            f" ※決算発表前後（1週間以内）のため "
-            f"{earnings_filtered_count} 件をエントリー対象外として除外"
-        )
-    return base
+    del earnings_filter_enabled
+    parts = [f"【{mode}】BUY SIGNAL {count} 件" for mode, count in mode_summaries]
+    joined = " / ".join(parts) if parts else "BUY SIGNAL 0 件"
+    label = "JPX400 同時スキャン完了" if len(mode_summaries) > 1 else "JPX400 スキャン完了"
+    return f"{label}: {joined} / {total} 銘柄（{elapsed}秒）"
 
 
 async def _execute_jpx400_realtime_scan(
     selected_mode: str = "堅実",
     *,
+    modes: Optional[Sequence[str]] = None,
     auto_verify: bool = True,
     user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     JPX400（約400銘柄）を非同期並列スクリーニングし、結果を即時返却する。
-    Vercel 上でボタン押下 → 同一リクエストで完結する想定。
+
+    modes を複数渡すと株価は1回だけ取得し、堅実・標準・積極を同時評価する。
+    ヒットはモードごとの scan session / scan_results.risk_mode に分けて保存する。
     """
     import time
     from datetime import datetime
     from screener.jpx400 import get_jpx400_tickers
 
-    safe_mode = selected_mode if selected_mode in RISK_MODES else "堅実"
-    mode_config = RISK_MODES[safe_mode]
+    target_modes = _ordered_scan_modes(modes)
+    if not target_modes:
+        fallback = selected_mode if selected_mode in RISK_MODES else "堅実"
+        target_modes = [fallback]
+
     tickers = get_jpx400_tickers()
     total = len(tickers)
-
-    scan_id = (
-        f"jpx400_{safe_mode}_"
-        f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_"
-        f"{uuid.uuid4().hex[:6]}"
-    )
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    group_suffix = uuid.uuid4().hex[:6]
+    scan_group_id = f"jpx400_multi_{stamp}_{group_suffix}"
+    scan_ids = {
+        mode: f"jpx400_{mode}_{stamp}_{group_suffix}"
+        for mode in target_modes
+    }
+    primary_scan_id = scan_ids[target_modes[0]]
 
     global _jpx400_progress
     config = read_config_yaml()
     earnings_cfg = get_earnings_filter_settings(config)
     _jpx400_progress.update({
         "status":          "running",
-        "scan_id":         scan_id,
+        "scan_id":         scan_group_id if len(target_modes) > 1 else primary_scan_id,
+        "scan_group_id":   scan_group_id,
         "user_id":         user_id,
-        "mode":            safe_mode,
+        "mode":            target_modes[0] if len(target_modes) == 1 else "all",
+        "modes":           target_modes,
         "processed":       0,
         "total":           total,
         "buy_count":       0,
         "buy_signals":     [],
+        "results_by_mode": {},
         "error":           None,
         "elapsed_seconds": None,
     })
 
-    storage.create_session(
-        scan_id=scan_id,
-        scan_type=f"jpx400_{safe_mode}",
-        total_tickers=total,
-        user_id=user_id,
-    )
+    for mode in target_modes:
+        storage.create_session(
+            scan_id=scan_ids[mode],
+            scan_type=f"jpx400_{mode}",
+            total_tickers=total,
+            user_id=user_id,
+            risk_mode=mode,
+            scan_group_id=scan_group_id,
+        )
 
     started = time.monotonic()
     fetcher = DataFetcher(delay_seconds=0, history_period="6mo")
     evaluator = StrategyEvaluator(config)
+    mode_configs = {mode: RISK_MODES[mode] for mode in target_modes}
 
     tasks = [
-        _fetch_and_evaluate_single_stock(
+        _fetch_and_evaluate_stock_modes(
             ticker,
-            mode_config,
+            mode_configs,
             evaluator,
             fetcher,
             earnings_cfg,
-            safe_mode,
         )
         for ticker in tickers
     ]
-    results = await asyncio.gather(*tasks)
+    evaluated = await asyncio.gather(*tasks)
 
-    buy_signals: List[Dict[str, Any]] = []
-    earnings_filtered_count = 0
-    for stock in results:
-        if stock is None:
+    hits_by_mode: Dict[str, List[Dict[str, Any]]] = {mode: [] for mode in target_modes}
+    filtered_by_mode: Dict[str, int] = {mode: 0 for mode in target_modes}
+    for stock in evaluated:
+        if not stock:
             continue
-        if stock.get("_earnings_filtered"):
-            earnings_filtered_count += 1
-            continue
-        ev = dict(stock["metrics"])
-        ev["ticker"] = stock["ticker"]
-        ev["name"] = stock["name"]
-        ev = _enrich_scan_result(ev)
-        for k in ("current_price", "rsi"):
-            if ev.get(k) is not None:
-                ev[k] = float(ev[k])
-        result_id = storage.save_result(scan_id, ev, user_id=user_id)
-        ev["buy_signal"] = True
-        ev["scan_result_id"] = result_id
-        ev["auto_registered"] = False
-        buy_signals.append(ev)
+        for mode, filtered in (stock.get("earnings_filtered") or {}).items():
+            if filtered and mode in filtered_by_mode:
+                filtered_by_mode[mode] += 1
+        name = stock.get("name") or stock.get("ticker")
+        for mode, metrics in (stock.get("hits") or {}).items():
+            if mode not in hits_by_mode or not metrics:
+                continue
+            ev = dict(metrics)
+            ev["ticker"] = stock["ticker"]
+            ev["name"] = name
+            ev["risk_mode"] = mode
+            ev["mode"] = mode
+            ev = _enrich_scan_result(ev)
+            for key in ("current_price", "rsi"):
+                if ev.get(key) is not None:
+                    ev[key] = float(ev[key])
+            hits_by_mode[mode].append(ev)
 
-    elapsed = round(time.monotonic() - started, 2)
-    await _localize_stock_names(buy_signals)
+    all_hits = [ev for mode in target_modes for ev in hits_by_mode[mode]]
+    await _localize_stock_names(all_hits)
 
-    auto_registered: List[Dict[str, Any]] = []
-    auto_register_errors: List[str] = []
-    if auto_verify:
-        for ev in buy_signals:
+    results_by_mode: Dict[str, Dict[str, Any]] = {}
+    flat_signals: List[Dict[str, Any]] = []
+    registered_total = 0
+    register_errors: List[str] = []
+
+    for mode in target_modes:
+        scan_id = scan_ids[mode]
+        mode_hits = hits_by_mode[mode]
+        auto_registered: List[Dict[str, Any]] = []
+        auto_register_errors: List[str] = []
+        for ev in mode_hits:
+            result_id = storage.save_result(scan_id, ev, user_id=user_id)
+            ev["buy_signal"] = True
+            ev["scan_result_id"] = result_id
+            ev["scan_id"] = scan_id
+            ev["auto_registered"] = False
+            if not auto_verify:
+                continue
             ticker = ev.get("ticker")
             try:
                 track_id = register_track_from_scan(
                     scan_id,
                     ev,
-                    risk_mode=safe_mode,
-                    scan_result_id=ev.get("scan_result_id"),
+                    risk_mode=mode,
+                    scan_result_id=result_id,
                     force=True,
                     user_id=user_id,
                 )
                 if track_id is None:
                     logger.warning(
-                        "検証リスト自動登録スキップ: scan_id=%s ticker=%s",
+                        "検証リスト自動登録スキップ: scan_id=%s ticker=%s mode=%s",
                         scan_id,
                         ticker,
+                        mode,
                     )
                     continue
                 ev["auto_registered"] = True
                 ev["track_id"] = track_id
-                auto_registered.append({"ticker": ticker, "track_id": track_id})
+                auto_registered.append({"ticker": ticker, "track_id": track_id, "risk_mode": mode})
             except Exception as exc:
                 logger.exception(
-                    "検証リスト自動登録失敗: scan_id=%s ticker=%s: %s",
+                    "検証リスト自動登録失敗: scan_id=%s ticker=%s mode=%s: %s",
                     scan_id,
                     ticker,
+                    mode,
                     exc,
                 )
-                auto_register_errors.append(f"{ticker}: {exc}")
+                auto_register_errors.append(f"{mode}:{ticker}: {exc}")
 
-    decorated = _decorate_buy_signal_rows(buy_signals)
+        decorated = _decorate_buy_signal_rows(mode_hits)
+        storage.complete_session(
+            scan_id=scan_id,
+            buy_signal_count=len(mode_hits),
+            sent_line=False,
+        )
+        registered_total += len(auto_registered)
+        register_errors.extend(auto_register_errors)
+        flat_signals.extend(decorated)
+        results_by_mode[mode] = {
+            "scan_id": scan_id,
+            "mode": mode,
+            "buy_count": len(decorated),
+            "buy_signals": decorated,
+            "earnings_filtered_count": filtered_by_mode[mode],
+            "auto_registered_count": len(auto_registered),
+            "auto_registered_tickers": [row["ticker"] for row in auto_registered],
+            "auto_register_errors": auto_register_errors,
+        }
 
-    storage.complete_session(
-        scan_id=scan_id,
-        buy_signal_count=len(buy_signals),
-        sent_line=False,
-    )
-
+    elapsed = round(time.monotonic() - started, 2)
+    earnings_filtered_count = sum(filtered_by_mode.values())
     message = _build_scan_completion_message(
-        safe_mode,
-        len(buy_signals),
+        [(mode, results_by_mode[mode]["buy_count"]) for mode in target_modes],
         total,
         elapsed,
-        earnings_filtered_count,
         earnings_cfg.get("enabled", True),
     )
+    if earnings_cfg.get("enabled", True) and earnings_filtered_count > 0:
+        message += (
+            f" ※決算発表前後のため {earnings_filtered_count} 件をエントリー対象外として除外"
+        )
     if auto_verify:
-        message += f" / 検証リストへ {len(auto_registered)} 件を自動登録"
-        if auto_register_errors:
-            message += f"（失敗 {len(auto_register_errors)} 件）"
+        message += f" / 検証リストへ {registered_total} 件を自動登録"
+        if register_errors:
+            message += f"（失敗 {len(register_errors)} 件）"
 
+    single_mode = target_modes[0] if len(target_modes) == 1 else None
     payload = {
         "status":          "completed",
-        "scan_id":         scan_id,
-        "mode":            safe_mode,
+        "scan_id":         primary_scan_id if single_mode else scan_group_id,
+        "scan_group_id":   scan_group_id,
+        "scan_ids":        scan_ids,
+        "mode":            single_mode or "all",
+        "modes":           target_modes,
+        "results_by_mode": results_by_mode,
         "total":           total,
         "total_tickers":   total,
         "processed":       total,
-        "buy_count":       len(buy_signals),
-        "buy_signals":     decorated,
+        "buy_count":       len(flat_signals),
+        "buy_signals":     flat_signals,
         "earnings_filtered_count": earnings_filtered_count,
         "earnings_filter_enabled": earnings_cfg.get("enabled", True),
         "auto_verify": auto_verify,
-        "auto_registered_count": len(auto_registered),
-        "auto_registered_tickers": [row["ticker"] for row in auto_registered],
-        "auto_register_errors": auto_register_errors,
+        "auto_registered_count": registered_total,
+        "auto_registered_tickers": [
+            row.get("ticker")
+            for block in results_by_mode.values()
+            for row in (
+                [{"ticker": ticker} for ticker in block.get("auto_registered_tickers") or []]
+            )
+        ],
+        "auto_register_errors": register_errors,
         "elapsed_seconds": elapsed,
         "message":         message,
     }
@@ -789,18 +862,18 @@ async def start_jpx400_scan(
             ),
         )
 
-    safe_mode = payload.mode if payload.mode in RISK_MODES else "堅実"
+    target_modes = _resolve_dashboard_scan_modes(payload.modes)
     verify_flag = coerce_auto_verify(payload.auto_verify, default=True)
     logger.info(
-        "[JPX400 scan] mode=%s auto_verify=%s",
-        safe_mode,
+        "[JPX400 scan] modes=%s auto_verify=%s",
+        target_modes,
         verify_flag,
     )
     user_id = require_user_id(user)
     try:
         async with _scan_lock:
             return _json_safe(await _execute_jpx400_realtime_scan(
-                safe_mode,
+                modes=target_modes,
                 auto_verify=verify_flag,
                 user_id=user_id,
             ))
@@ -825,11 +898,15 @@ def _market_scan_status_payload(user_id: Optional[str]) -> Dict[str, Any]:
         prog = {
             "status": "idle",
             "scan_id": None,
+            "scan_group_id": None,
             "user_id": user_id,
+            "mode": None,
+            "modes": [],
             "processed": 0,
             "total": 0,
             "buy_count": 0,
             "buy_signals": [],
+            "results_by_mode": {},
             "error": None,
         }
     scan_id = prog.get("scan_id")
@@ -888,12 +965,17 @@ def get_scan_history(
 @app.get("/api/history/buy-signals")
 def get_buy_signal_history(
     limit: int = 50,
+    risk_mode: Optional[str] = None,
     user: AuthUser = Depends(get_current_user),
 ):
-    """過去のスキャンで BUY SIGNAL が出た銘柄を新しい順に返す。"""
+    """過去のスキャンで BUY SIGNAL が出た銘柄を新しい順に返す。risk_mode でモード別に絞れる。"""
     user_id = require_user_id(user)
     try:
-        return storage.get_history_buy_signals(limit=limit, user_id=user_id)
+        return storage.get_history_buy_signals(
+            limit=limit,
+            user_id=user_id,
+            risk_mode=risk_mode if risk_mode in RISK_MODES else None,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"BUY SIGNAL 履歴の取得に失敗: {e}")
 
@@ -902,10 +984,12 @@ def get_buy_signal_history(
 def get_scan_results(
     scan_id: str,
     buy_signal_only: bool = False,
+    risk_mode: Optional[str] = None,
     user: AuthUser = Depends(get_current_user),
 ):
-    """特定スキャンの全銘柄結果を返す。"""
+    """特定スキャンの全銘柄結果を返す。risk_mode 指定時はそのモードのヒットだけ返す。"""
     user_id = require_user_id(user)
+    safe_mode = risk_mode if risk_mode in RISK_MODES else None
     try:
         session = storage.get_session(scan_id, user_id=user_id)
         if not session:
@@ -914,8 +998,52 @@ def get_scan_results(
             scan_id,
             buy_signal_only=buy_signal_only,
             user_id=user_id,
+            risk_mode=safe_mode,
         )
-        return {"scan_id": scan_id, "session": session, "results": results}
+        return {
+            "scan_id": scan_id,
+            "risk_mode": safe_mode or session.get("risk_mode"),
+            "session": session,
+            "results": results,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"結果の取得に失敗: {e}")
+
+
+@app.get("/api/history/group/{scan_group_id}")
+def get_scan_group(
+    scan_group_id: str,
+    user: AuthUser = Depends(get_current_user),
+):
+    """同時スキャン1回分を、モード別のヒット一覧として返す。"""
+    user_id = require_user_id(user)
+    try:
+        sessions = storage.list_sessions_by_group(scan_group_id, user_id=user_id)
+        if not sessions:
+            raise HTTPException(status_code=404, detail="スキャンが見つかりません。")
+        results_by_mode: Dict[str, Any] = {}
+        for session in sessions:
+            mode = session.get("risk_mode") or "不明"
+            hits = storage.get_results(
+                session["scan_id"],
+                buy_signal_only=True,
+                user_id=user_id,
+                risk_mode=mode if mode in RISK_MODES else None,
+            )
+            results_by_mode[mode] = {
+                "scan_id": session["scan_id"],
+                "mode": mode,
+                "session": session,
+                "buy_count": len(hits),
+                "buy_signals": _decorate_buy_signal_rows(hits),
+            }
+        return {
+            "scan_group_id": scan_group_id,
+            "modes": [mode for mode in RISK_MODES if mode in results_by_mode],
+            "results_by_mode": results_by_mode,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -1200,52 +1328,68 @@ def _derive_trend_status(result: Dict[str, Any]) -> str:
     return "MONITOR"
 
 
-async def _fetch_and_evaluate_single_stock(
+async def _fetch_and_evaluate_stock_modes(
     ticker: str,
-    mode_config: Dict[str, float],
+    mode_configs: Dict[str, Dict[str, float]],
     evaluator: StrategyEvaluator,
     fetcher: DataFetcher,
     earnings_cfg: Optional[Dict[str, Any]] = None,
-    risk_mode: str = "堅実",
 ) -> Optional[Dict[str, Any]]:
-    """1銘柄を非同期ワーカーで取得・評価する。"""
+    """1銘柄の株価を1回だけ取得し、指定モードすべてで評価する。"""
     async with _scan_semaphore:
         try:
             df, name = await asyncio.to_thread(fetcher.fetch_ticker_data, ticker)
             if df is None or df.empty:
                 return None
 
-            stock_evaluator = StrategyEvaluator(evaluator.config)
-            _apply_risk_mode(stock_evaluator, mode_config)
-            metrics = stock_evaluator.evaluate(ticker, name or ticker, df)
+            hits: Dict[str, Dict[str, Any]] = {}
+            for mode, mode_config in mode_configs.items():
+                stock_evaluator = StrategyEvaluator(evaluator.config)
+                _apply_risk_mode(stock_evaluator, mode_config)
+                metrics = stock_evaluator.evaluate(ticker, name or ticker, df)
+                if metrics.get("buy_signal"):
+                    hits[mode] = metrics
 
-            if not metrics.get("buy_signal"):
-                return None
+            earnings_filtered = {mode: False for mode in mode_configs}
+            if not hits:
+                return {
+                    "ticker": ticker,
+                    "name": name or ticker,
+                    "hits": {},
+                    "earnings_filtered": earnings_filtered,
+                }
 
-            cfg = earnings_cfg or get_earnings_filter_settings(read_config_yaml())
+            cfg = earnings_cfg or get_earnings_filter_settings(evaluator.config)
             if cfg.get("enabled", True):
                 blackout = await asyncio.to_thread(
                     check_earnings_blackout,
                     ticker,
                     days_before=cfg.get("days_before", 7),
                     days_after=cfg.get("days_after", 7),
-                    fail_closed=should_fail_closed_for_mode(risk_mode, evaluator.config),
+                    fail_closed=False,
                 )
-                if blackout.is_blackout:
+                for mode in list(hits):
+                    fail_closed = should_fail_closed_for_mode(mode, evaluator.config)
+                    filtered = blackout.is_blackout or (
+                        not blackout.data_available and fail_closed
+                    )
+                    if not filtered:
+                        continue
+                    earnings_filtered[mode] = True
+                    hits.pop(mode, None)
                     logger.info(
                         "決算フィルター除外: %s (%s) mode=%s fail_closed=%s",
                         ticker,
                         blackout.reference_date,
-                        risk_mode,
-                        blackout.fail_closed and not blackout.data_available,
+                        mode,
+                        fail_closed and not blackout.data_available,
                     )
-                    return {"_earnings_filtered": True, "ticker": ticker}
 
             return {
                 "ticker": ticker,
                 "name": name or ticker,
-                "metrics": metrics,
-                "trend_status": _derive_trend_status(metrics),
+                "hits": hits,
+                "earnings_filtered": earnings_filtered,
             }
         except Exception as e:
             logger.error(f"銘柄 {ticker} の処理中にエラーが発生: {e}")
@@ -1472,16 +1616,26 @@ def _resolve_chat_codes(code: Optional[str], query: str) -> List[str]:
     return [single] if single else []
 
 
-def _lookup_jpx400_scan_hit(code: str) -> Optional[Dict[str, Any]]:
-    """直近 JPX400 スキャン結果から銘柄ヒットを検索する。"""
+def _lookup_jpx400_scan_hit(
+    code: str,
+    mode: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """直近 JPX400 スキャン結果から銘柄ヒットを検索する。mode 指定時はそのモードを優先する。"""
     target = (normalize_jp_stock_code(code) or code.strip()).removesuffix(".T").upper()
     if not target:
         return None
+    matches: List[Dict[str, Any]] = []
     for row in _jpx400_progress.get("buy_signals") or []:
         ticker = (row.get("ticker") or "").removesuffix(".T").upper()
         if ticker == target:
-            return dict(row)
-    return None
+            matches.append(row)
+    if not matches:
+        return None
+    if mode:
+        for row in matches:
+            if row.get("risk_mode") == mode or row.get("mode") == mode:
+                return dict(row)
+    return dict(matches[0])
 
 
 def _merge_screen_data(
@@ -1512,7 +1666,7 @@ def _fetch_live_screen_data(
 
     single_code = normalized.split(",")[0]
     live = _diagnose_ticker(single_code, mode)
-    cached = _lookup_jpx400_scan_hit(single_code)
+    cached = _lookup_jpx400_scan_hit(single_code, mode)
     if cached:
         live = _merge_screen_data(live, cached)
     if hint and not _is_dummy_screen_data(hint):

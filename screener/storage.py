@@ -115,15 +115,18 @@ def create_session(
     total_tickers: int,
     *,
     user_id: Optional[str] = None,
+    risk_mode: Optional[str] = None,
+    scan_group_id: Optional[str] = None,
 ) -> None:
     now = datetime.utcnow().isoformat()
     with connect() as conn:
         execute(
             conn,
             """INSERT INTO scan_sessions
-               (scan_id, user_id, started_at, status, scan_type, total_tickers)
-               VALUES (?, ?, ?, 'running', ?, ?)""",
-            (scan_id, user_id, now, scan_type, total_tickers),
+               (scan_id, user_id, started_at, status, scan_type, total_tickers,
+                risk_mode, scan_group_id)
+               VALUES (?, ?, ?, 'running', ?, ?, ?, ?)""",
+            (scan_id, user_id, now, scan_type, total_tickers, risk_mode, scan_group_id),
         )
 
 
@@ -208,6 +211,25 @@ def list_sessions(
         )
 
 
+def list_sessions_by_group(
+    scan_group_id: str,
+    *,
+    user_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """同一の同時スキャンに属するモード別セッションを返す。"""
+    clauses = ["scan_group_id = ?"]
+    params: List[Any] = [scan_group_id]
+    _append_user_filter(clauses, params, user_id)
+    with connect() as conn:
+        return fetchall(
+            conn,
+            f"""SELECT * FROM scan_sessions
+                WHERE {' AND '.join(clauses)}
+                ORDER BY started_at ASC, scan_id ASC""",
+            params,
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 銘柄結果操作
 # ─────────────────────────────────────────────────────────────────────────────
@@ -223,14 +245,15 @@ def save_result(
         return insert_returning_id(
             conn,
             """INSERT INTO scan_results
-               (user_id, scan_id, ticker, name, current_price, change_percent,
+               (user_id, scan_id, risk_mode, ticker, name, current_price, change_percent,
                 buy_signal, is_prime_entry, triggered, signals,
                 rsi, ma25, macd, macd_signal, macd_hist,
                 macd_crossover, macd_pre_crossover, ma25_uptrend, scanned_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 user_id,
                 scan_id,
+                ev.get("risk_mode"),
                 ev["ticker"],
                 ev["name"],
                 ev.get("current_price"),
@@ -270,10 +293,14 @@ def get_results(
     buy_signal_only: bool = False,
     *,
     user_id: Optional[str] = None,
+    risk_mode: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     clauses = ["scan_id = ?"]
     params: List[Any] = [scan_id]
     _append_user_filter(clauses, params, user_id)
+    if risk_mode:
+        clauses.append("risk_mode = ?")
+        params.append(risk_mode)
     if buy_signal_only:
         clauses.append("buy_signal = 1")
     order = "ORDER BY rsi" if buy_signal_only else "ORDER BY buy_signal DESC, rsi"
@@ -290,6 +317,7 @@ def get_history_buy_signals(
     limit: int = 50,
     *,
     user_id: Optional[str] = None,
+    risk_mode: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     clauses = ["r.buy_signal = 1"]
     params: List[Any] = []
@@ -297,6 +325,9 @@ def get_history_buy_signals(
         clauses.append("r.user_id = ?")
         clauses.append("s.user_id = ?")
         params.extend([user_id, user_id])
+    if risk_mode:
+        clauses.append("r.risk_mode = ?")
+        params.append(risk_mode)
     params.append(limit)
     with connect() as conn:
         rows = fetchall(
