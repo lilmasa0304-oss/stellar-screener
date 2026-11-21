@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+import threading
+from typing import Any
 
 import requests
 import yfinance as yf
@@ -24,17 +25,18 @@ _YAHOO_BROWSER_HEADERS = {
     "Connection": "keep-alive",
 }
 
-_session: Optional[requests.Session] = None
+_thread_local = threading.local()
 
 
 def get_yahoo_session() -> requests.Session:
-    """ブラウザ風ヘッダー付きの共有 requests.Session を返す。"""
-    global _session
-    if _session is None:
-        _session = requests.Session()
-        _session.headers.update(_YAHOO_BROWSER_HEADERS)
-        logger.debug("Yahoo Finance 用ブラウザ風セッションを初期化しました")
-    return _session
+    """スレッドごとの requests.Session を返す。共有 Session は並列取得で壊れる。"""
+    session = getattr(_thread_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.headers.update(_YAHOO_BROWSER_HEADERS)
+        _thread_local.session = session
+        logger.debug("Yahoo Finance 用セッションをこのスレッドで初期化しました")
+    return session
 
 
 def create_yfinance_ticker(symbol: str) -> Any:

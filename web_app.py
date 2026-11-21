@@ -360,8 +360,11 @@ class ChatPayload(BaseModel):
     conversation_id:  Optional[str] = Field(None, description="後方互換用（未使用）")
 
 
-# 並列リクエスト上限（Yahoo Finance API 制限対策・Vercel 向けに最適化）
-MAX_CONCURRENT_REQUESTS = 40
+# 並列リクエスト上限。40 だと Yahoo が空応答を返し、完了なのに全モード 0 件になる。
+MAX_CONCURRENT_REQUESTS = 12
+_FETCH_FAIL_RETRY_RATIO = 0.15
+_FETCH_FAIL_DEGRADED_RATIO = 0.15
+_FETCH_FAIL_FAILED_RATIO = 0.5
 _scan_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 _scan_lock = asyncio.Lock()
 
@@ -607,6 +610,15 @@ def _resolve_dashboard_scan_modes(requested: Optional[Sequence[str]]) -> List[st
     return selected or list(RISK_MODES.keys())
 
 
+def _scan_data_quality(fetched: int, total: int) -> str:
+    """取得成功率から、0件が条件不一致かデータ欠落かを分ける。"""
+    if total <= 0 or fetched / total < _FETCH_FAIL_FAILED_RATIO:
+        return "failed"
+    if fetched / total < (1 - _FETCH_FAIL_DEGRADED_RATIO):
+        return "degraded"
+    return "ok"
+
+
 def _build_scan_completion_message(
     mode_summaries: Sequence[tuple],
     total: int,
@@ -687,23 +699,52 @@ async def _execute_jpx400_realtime_scan(
     evaluator = StrategyEvaluator(config)
     mode_configs = {mode: RISK_MODES[mode] for mode in target_modes}
 
-    tasks = [
-        _fetch_and_evaluate_stock_modes(
-            ticker,
-            mode_configs,
-            evaluator,
-            fetcher,
-            earnings_cfg,
-        )
-        for ticker in tickers
+    async def _evaluate_tickers(batch: List[str]) -> List[Optional[Dict[str, Any]]]:
+        return list(await asyncio.gather(*[
+            _fetch_and_evaluate_stock_modes(
+                ticker,
+                mode_configs,
+                evaluator,
+                fetcher,
+                earnings_cfg,
+            )
+            for ticker in batch
+        ]))
+
+    evaluated = await _evaluate_tickers(tickers)
+    failed_tickers = [
+        ticker
+        for ticker, stock in zip(tickers, evaluated)
+        if not stock or not stock.get("fetch_ok")
     ]
-    evaluated = await asyncio.gather(*tasks)
+    if failed_tickers and len(failed_tickers) / total >= _FETCH_FAIL_RETRY_RATIO:
+        logger.warning(
+            "株価の再取得: %s/%s 銘柄 (user=%s)",
+            len(failed_tickers),
+            total,
+            user_id,
+        )
+        await asyncio.sleep(2)
+        retried = await _evaluate_tickers(failed_tickers)
+        retry_by_ticker = {
+            ticker: stock
+            for ticker, stock in zip(failed_tickers, retried)
+            if stock and stock.get("fetch_ok")
+        }
+        evaluated = [
+            retry_by_ticker.get(ticker, stock)
+            for ticker, stock in zip(tickers, evaluated)
+        ]
 
     hits_by_mode: Dict[str, List[Dict[str, Any]]] = {mode: [] for mode in target_modes}
     filtered_by_mode: Dict[str, int] = {mode: 0 for mode in target_modes}
+    fetched_count = 0
+    fetch_failed_count = 0
     for stock in evaluated:
-        if not stock:
+        if not stock or not stock.get("fetch_ok"):
+            fetch_failed_count += 1
             continue
+        fetched_count += 1
         for mode, filtered in (stock.get("earnings_filtered") or {}).items():
             if filtered and mode in filtered_by_mode:
                 filtered_by_mode[mode] += 1
@@ -796,17 +837,28 @@ async def _execute_jpx400_realtime_scan(
 
     elapsed = round(time.monotonic() - started, 2)
     earnings_filtered_count = sum(filtered_by_mode.values())
+    data_quality = _scan_data_quality(fetched_count, total)
     message = _build_scan_completion_message(
         [(mode, results_by_mode[mode]["buy_count"]) for mode in target_modes],
         total,
         elapsed,
         earnings_cfg.get("enabled", True),
     )
+    if data_quality == "failed":
+        message = (
+            f"株価データを十分に取得できませんでした（成功 {fetched_count} / {total}、"
+            f"失敗 {fetch_failed_count}）。各モード 0件は、条件に合わなかった結果ではありません。"
+            "しばらく待って再実行してください。"
+        )
+    elif data_quality == "degraded":
+        message += f" ※株価取得失敗 {fetch_failed_count} 件"
+    elif not flat_signals:
+        message += " 株価は取得できましたが、選択したモードの買い条件に合う銘柄はありませんでした。"
     if earnings_cfg.get("enabled", True) and earnings_filtered_count > 0:
         message += (
             f" ※決算発表前後のため {earnings_filtered_count} 件をエントリー対象外として除外"
         )
-    if auto_verify:
+    if auto_verify and data_quality != "failed":
         message += f" / 検証リストへ {registered_total} 件を自動登録"
         if register_errors:
             message += f"（失敗 {len(register_errors)} 件）"
@@ -825,6 +877,9 @@ async def _execute_jpx400_realtime_scan(
         "processed":       total,
         "buy_count":       len(flat_signals),
         "buy_signals":     flat_signals,
+        "fetched_count":   fetched_count,
+        "fetch_failed_count": fetch_failed_count,
+        "data_quality":    data_quality,
         "earnings_filtered_count": earnings_filtered_count,
         "earnings_filter_enabled": earnings_cfg.get("enabled", True),
         "auto_verify": auto_verify,
@@ -841,7 +896,13 @@ async def _execute_jpx400_realtime_scan(
         "message":         message,
     }
     _jpx400_progress.update(payload)
-    logger.info(payload["message"])
+    logger.info(
+        "%s fetched=%s failed=%s quality=%s",
+        payload["message"],
+        fetched_count,
+        fetch_failed_count,
+        data_quality,
+    )
     return payload
 
 
@@ -1340,7 +1401,14 @@ async def _fetch_and_evaluate_stock_modes(
         try:
             df, name = await asyncio.to_thread(fetcher.fetch_ticker_data, ticker)
             if df is None or df.empty:
-                return None
+                logger.info("株価取得失敗: %s", ticker)
+                return {
+                    "ticker": ticker,
+                    "name": ticker,
+                    "fetch_ok": False,
+                    "hits": {},
+                    "earnings_filtered": {},
+                }
 
             hits: Dict[str, Dict[str, Any]] = {}
             for mode, mode_config in mode_configs.items():
@@ -1355,6 +1423,7 @@ async def _fetch_and_evaluate_stock_modes(
                 return {
                     "ticker": ticker,
                     "name": name or ticker,
+                    "fetch_ok": True,
                     "hits": {},
                     "earnings_filtered": earnings_filtered,
                 }
@@ -1388,18 +1457,36 @@ async def _fetch_and_evaluate_stock_modes(
             return {
                 "ticker": ticker,
                 "name": name or ticker,
+                "fetch_ok": True,
                 "hits": hits,
                 "earnings_filtered": earnings_filtered,
             }
         except Exception as e:
             logger.error(f"銘柄 {ticker} の処理中にエラーが発生: {e}")
-            return None
+            return {
+                "ticker": ticker,
+                "name": ticker,
+                "fetch_ok": False,
+                "hits": {},
+                "earnings_filtered": {},
+            }
 
 
 async def _execute_bulk_screener(selected_mode: str) -> Dict[str, Any]:
     """JPX400 銘柄を非同期並列でスクリーニングする（/api/v1/screen 用）。"""
     result = await _execute_jpx400_realtime_scan(selected_mode)
     buy_signals = result.get("buy_signals") or []
+    if result.get("data_quality") == "failed":
+        return {
+            "status": "DATA_UNAVAILABLE",
+            "mode": result.get("mode", selected_mode),
+            "message": result.get("message"),
+            "stocks": [],
+            "count": 0,
+            "fetched_count": result.get("fetched_count"),
+            "fetch_failed_count": result.get("fetch_failed_count"),
+            "data_quality": "failed",
+        }
     if not buy_signals:
         return {
             "status": "NO_TRADE",
@@ -1408,6 +1495,9 @@ async def _execute_bulk_screener(selected_mode: str) -> Dict[str, Any]:
                 f"本日、{selected_mode}モードの超厳格基準を突破できた銘柄は0件でした。"
                 "完璧な資本防衛が遂行されました。"
             ),
+            "fetched_count": result.get("fetched_count"),
+            "fetch_failed_count": result.get("fetch_failed_count"),
+            "data_quality": result.get("data_quality"),
             "stocks": [],
             "count": 0,
         }

@@ -1354,6 +1354,11 @@
                 if ((data.earnings_filtered_count || 0) > 0) {
                     progressText += ` / 決算前後除外 ${data.earnings_filtered_count} 件`;
                 }
+                if (data.data_quality === 'failed') {
+                    progressText = `株価取得失敗 ${data.fetch_failed_count || 0} / ${data.total || 0}`;
+                } else if ((data.fetch_failed_count || 0) > 0) {
+                    progressText += ` / 取得失敗 ${data.fetch_failed_count}`;
+                }
                 label.textContent = progressText;
                 return;
             }
@@ -1436,11 +1441,17 @@
                 return sum + hits.length;
             }, 0);
 
+            const fetchFailed = options.dataQuality === 'failed';
             if (totalHits === 0) {
                 emptyEl.classList.remove('hidden');
-                emptyEl.textContent = visibleModes.length === 1
-                    ? `【${visibleModes[0]}】では BUY SIGNAL は検出されませんでした。`
-                    : '選択したモードでは BUY SIGNAL は検出されませんでした。';
+                if (fetchFailed) {
+                    emptyEl.textContent =
+                        `株価データを十分に取得できませんでした（成功 ${options.fetchedCount || 0} / ${options.total || 0}）。各モードの 0件は、条件に合わなかった結果ではありません。しばらく待って再実行してください。`;
+                } else if (visibleModes.length === 1) {
+                    emptyEl.textContent = `株価は取得できました。【${visibleModes[0]}】の買い条件に合う銘柄はありませんでした。`;
+                } else {
+                    emptyEl.textContent = '株価は取得できました。選択したモードの買い条件に合う銘柄はありませんでした。';
+                }
             } else {
                 emptyEl.classList.add('hidden');
             }
@@ -1466,7 +1477,9 @@
                 if (hits.length === 0) {
                     const empty = document.createElement('p');
                     empty.className = 'text-sm text-slate-500 text-center py-8 leading-relaxed';
-                    empty.textContent = 'このモードの BUY SIGNAL はありません。';
+                    empty.textContent = fetchFailed
+                        ? '株価を取得できなかったため、このモードは判定できていません。'
+                        : 'このモードの BUY SIGNAL はありません。';
                     list.appendChild(empty);
                 } else {
                     hits.forEach((hit) => {
@@ -1545,6 +1558,9 @@
                 renderScanHitsByMode(data.results_by_mode || {}, {
                     autoVerify: autoVerifyApplied,
                     modes: data.modes || scanModes,
+                    dataQuality: data.data_quality,
+                    fetchedCount: data.fetched_count,
+                    total: data.total,
                 });
                 scanStatus.textContent = data.message || `JPX400 同時スキャン完了: BUY SIGNAL ${data.buy_count || 0} 件`;
                 if (autoVerify) {
