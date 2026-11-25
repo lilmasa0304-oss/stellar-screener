@@ -113,7 +113,9 @@ def test_dedupe_dashboard_tracks_collapses_ticker_variants():
             {"ticker": "3465.T", "signal_date": "2026-09-09", "risk_mode": "積極", "track_id": 3},
         ]
     )
-    assert [row["track_id"] for row in rows] == [2, 3]
+    # 案1: モード横断で1行に統合され、検出モードは統合される
+    assert [row["track_id"] for row in rows] == [2]
+    assert rows[0]["detected_modes"] == ["堅実", "積極"]
 
 
 if __name__ == "__main__":

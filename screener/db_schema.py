@@ -96,6 +96,7 @@ def _init_schema_sqlite(conn: Connection) -> None:
             entry_price      REAL NOT NULL,
             preset_matched   TEXT,
             risk_mode        TEXT,
+            detected_modes   TEXT,
             registered_at    TEXT NOT NULL,
             status           TEXT NOT NULL DEFAULT 'tracking',
             current_price    REAL,
@@ -190,6 +191,7 @@ def _init_schema_postgresql(conn: Connection) -> None:
             entry_price      DOUBLE PRECISION NOT NULL,
             preset_matched   TEXT,
             risk_mode        TEXT,
+            detected_modes   TEXT,
             registered_at    TEXT NOT NULL,
             status           TEXT NOT NULL DEFAULT 'tracking',
             current_price    DOUBLE PRECISION,
@@ -272,6 +274,7 @@ def _migrate_signal_tracks(conn: Connection) -> None:
         ("final_is_win", "INTEGER"),
         ("archived_at", "TEXT"),
         ("last_updated_at", "TEXT"),
+        ("detected_modes", "TEXT"),
     )
     pg_type = {
         "REAL": "DOUBLE PRECISION",
@@ -286,6 +289,14 @@ def _migrate_signal_tracks(conn: Connection) -> None:
     if not _column_exists(conn, "signal_track_outcomes", "min_return_pct"):
         ddl = "DOUBLE PRECISION" if get_backend() == "postgresql" else "REAL"
         execute(conn, f"ALTER TABLE signal_track_outcomes ADD COLUMN min_return_pct {ddl}")
+
+    # 案1: 検出モードを属性として保持する。既存行は risk_mode を初期値として移行する。
+    execute(
+        conn,
+        """UPDATE signal_tracks SET detected_modes = risk_mode
+           WHERE (detected_modes IS NULL OR detected_modes = '')
+             AND risk_mode IS NOT NULL AND risk_mode <> ''""",
+    )
 
     execute(conn, "UPDATE signal_tracks SET status='archived' WHERE status='completed'")
 

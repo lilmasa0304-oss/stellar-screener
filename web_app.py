@@ -769,6 +769,7 @@ async def _execute_jpx400_realtime_scan(
     results_by_mode: Dict[str, Dict[str, Any]] = {}
     flat_signals: List[Dict[str, Any]] = []
     registered_total = 0
+    registered_track_ids: set = set()
     register_errors: List[str] = []
 
     for mode in target_modes:
@@ -804,6 +805,7 @@ async def _execute_jpx400_realtime_scan(
                     continue
                 ev["auto_registered"] = True
                 ev["track_id"] = track_id
+                registered_track_ids.add(track_id)
                 auto_registered.append({"ticker": ticker, "track_id": track_id, "risk_mode": mode})
             except Exception as exc:
                 logger.exception(
@@ -821,7 +823,6 @@ async def _execute_jpx400_realtime_scan(
             buy_signal_count=len(mode_hits),
             sent_line=False,
         )
-        registered_total += len(auto_registered)
         register_errors.extend(auto_register_errors)
         flat_signals.extend(decorated)
         results_by_mode[mode] = {
@@ -835,6 +836,9 @@ async def _execute_jpx400_realtime_scan(
             "auto_register_errors": auto_register_errors,
         }
 
+    # 案1: 同一銘柄が複数モードで検出されても登録は1件に統合されるため、
+    # 登録件数はユニークな track_id 数で数える。
+    registered_total = len(registered_track_ids)
     elapsed = round(time.monotonic() - started, 2)
     earnings_filtered_count = sum(filtered_by_mode.values())
     data_quality = _scan_data_quality(fetched_count, total)
