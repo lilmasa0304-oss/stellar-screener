@@ -1104,7 +1104,12 @@
             if (!bodyEl) return;
             bodyEl.innerHTML = '';
 
-            const filtered = (tracks || []).filter((row) => !row.risk_mode || row.risk_mode === selectedRiskMode);
+            const filtered = (tracks || []).filter((row) => {
+                const modes = (row.detected_modes && row.detected_modes.length)
+                    ? row.detected_modes
+                    : (row.risk_mode ? [row.risk_mode] : []);
+                return modes.length === 0 || modes.includes(selectedRiskMode);
+            });
             if (filtered.length === 0) {
                 bodyEl.innerHTML = '<tr><td colspan="8" class="px-4 py-6 text-center text-slate-500">このモードの検証銘柄はまだありません。スキャン結果から追加してください。</td></tr>';
                 return;
@@ -1123,7 +1128,7 @@
                         <div class="font-bold text-slate-100">${escapeHtml(code)}</div>
                         <div class="text-xs text-slate-500 truncate max-w-[140px]">${escapeHtml(row.name || '')}</div>
                     </td>
-                    <td class="px-3 py-3 text-xs">${escapeHtml(row.risk_mode || '—')}</td>
+                    <td class="px-3 py-3 text-xs">${escapeHtml((row.detected_modes && row.detected_modes.length ? row.detected_modes.join('・') : row.risk_mode) || '—')}</td>
                     <td class="px-3 py-3 text-xs font-bold">${escapeHtml(row.elapsed_label || '—')}</td>
                     <td class="px-3 py-3 text-right">${formatPrice(row.current_price)}</td>
                     <td class="px-3 py-3 text-right ${returnPctClass(row.return_pct)}">${formatPct(row.return_pct)}</td>

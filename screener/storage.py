@@ -355,6 +355,84 @@ def _risk_mode_key(risk_mode: Optional[str]) -> str:
     return (risk_mode or "").strip()
 
 
+# 検出モードの表示・保存順（堅実 ⊂ 標準 ⊂ 積極 の厳しさ順）
+_MODE_ORDER = ("堅実", "標準", "積極")
+
+
+def _parse_detected_modes(
+    value: Any,
+    fallback_risk_mode: Optional[str] = None,
+) -> List[str]:
+    """detected_modes（カンマ区切り文字列）をモード名リストに変換する。
+
+    値が空の場合は従来の risk_mode 単一値をフォールバックとして使う。
+    """
+    modes: List[str] = []
+    for part in str(value or "").split(","):
+        mode = part.strip()
+        if mode and mode not in modes:
+            modes.append(mode)
+    if not modes:
+        fallback = _risk_mode_key(fallback_risk_mode)
+        if fallback:
+            modes.append(fallback)
+    ordered = [m for m in _MODE_ORDER if m in modes]
+    ordered.extend(m for m in modes if m not in _MODE_ORDER)
+    return ordered
+
+
+def _format_detected_modes(modes: List[str]) -> Optional[str]:
+    """モード名リストを保存形式（カンマ区切り文字列）に変換する。"""
+    parsed = _parse_detected_modes(",".join(modes or []))
+    return ",".join(parsed) if parsed else None
+
+
+def track_detected_modes(row: Optional[Dict[str, Any]]) -> List[str]:
+    """トラック行が検出されたモード一覧を返す（後方互換フォールバック付き）。"""
+    if not row:
+        return []
+    return _parse_detected_modes(row.get("detected_modes"), row.get("risk_mode"))
+
+
+def _detected_mode_filter_sql(column_prefix: str = "") -> str:
+    """「そのモードで検出された」行に一致する SQL 断片（? を2つ使う）。
+
+    risk_mode 単独一致に加え、detected_modes（カンマ区切り）への含有も一致とする。
+    """
+    return (
+        f"({column_prefix}risk_mode = ?"
+        f" OR (',' || COALESCE({column_prefix}detected_modes, '') || ',') LIKE ?)"
+    )
+
+
+def _detected_mode_params(risk_mode: str) -> List[Any]:
+    return [risk_mode, f"%,{risk_mode},%"]
+
+
+def _merge_detected_mode(
+    conn,
+    existing: Dict[str, Any],
+    risk_mode: Optional[str],
+) -> None:
+    """既存トラックの detected_modes に新しい検出モードを統合する。"""
+    if not risk_mode:
+        return
+    merged = _parse_detected_modes(existing.get("detected_modes"), existing.get("risk_mode"))
+    if risk_mode in merged:
+        return
+    merged.append(risk_mode)
+    execute(
+        conn,
+        "UPDATE signal_tracks SET detected_modes=? WHERE track_id=?",
+        (_format_detected_modes(merged), int(existing["track_id"])),
+    )
+    logger.info(
+        "検証リスト検出モード統合: track_id=%s detected_modes=%s",
+        existing["track_id"],
+        _format_detected_modes(merged),
+    )
+
+
 def _ensure_track_outcomes(conn, track_id: int) -> None:
     for horizon, label in ((3, "3日目"), (5, "5日目（1週間）"), (10, "10日目（2週間）")):
         insert_ignore(
@@ -374,7 +452,11 @@ def find_existing_signal_track(
     risk_mode: Optional[str] = None,
     user_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """同一銘柄（3465 / 3465.T）・同日・同モードの既存追跡を返す。"""
+    """同一銘柄（3465 / 3465.T）・同日の既存追跡を返す（モード横断・案1）。
+
+    risk_mode は後方互換のため引数に残すが、重複判定には使わない。
+    検出モードは register_signal_track 側で detected_modes に統合される。
+    """
     variants = ticker_lookup_variants(ticker)
     if not variants:
         return None
@@ -382,11 +464,9 @@ def find_existing_signal_track(
     clauses = [
         f"UPPER(ticker) IN ({placeholders})",
         "substr(CAST(signal_date AS TEXT), 1, 10) = ?",
-        "COALESCE(risk_mode, '') = ?",
     ]
     params: List[Any] = list(variants) + [
         _signal_date_key(signal_date),
-        _risk_mode_key(risk_mode),
     ]
     if user_id:
         clauses.append("user_id = ?")
@@ -419,6 +499,7 @@ def register_signal_track(
         return None
     ticker = canonical
     now = datetime.utcnow().isoformat()
+    detected_modes_value = _format_detected_modes([risk_mode]) if risk_mode else None
     with connect() as conn:
         existing = find_existing_signal_track(
             conn,
@@ -435,6 +516,8 @@ def register_signal_track(
                     "UPDATE signal_tracks SET ticker=? WHERE track_id=?",
                     (ticker, track_id),
                 )
+            # 案1: 別モードで検出されていた場合は detected_modes に統合する
+            _merge_detected_mode(conn, existing, risk_mode)
             logger.info(
                 "検証リスト重複スキップ: track_id=%s ticker=%s signal_date=%s risk_mode=%s",
                 track_id,
@@ -450,8 +533,8 @@ def register_signal_track(
                 insert_sql = """
                     INSERT INTO signal_tracks
                        (user_id, scan_result_id, scan_id, ticker, name, signal_date,
-                        entry_price, preset_matched, risk_mode, registered_at, status)
-                       VALUES (?,?,?,?,?,?,?,?,?,?, 'tracking')
+                        entry_price, preset_matched, risk_mode, detected_modes, registered_at, status)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?, 'tracking')
                        ON CONFLICT (user_id, scan_id, ticker, signal_date)
                        WHERE user_id IS NOT NULL
                        DO NOTHING
@@ -461,8 +544,8 @@ def register_signal_track(
                 insert_sql = """
                     INSERT INTO signal_tracks
                        (user_id, scan_result_id, scan_id, ticker, name, signal_date,
-                        entry_price, preset_matched, risk_mode, registered_at, status)
-                       VALUES (?,?,?,?,?,?,?,?,?,?, 'tracking')
+                        entry_price, preset_matched, risk_mode, detected_modes, registered_at, status)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?, 'tracking')
                        ON CONFLICT (scan_id, ticker, signal_date) DO NOTHING
                        RETURNING track_id
                 """
@@ -479,6 +562,7 @@ def register_signal_track(
                     entry_price,
                     preset_matched,
                     risk_mode,
+                    detected_modes_value,
                     now,
                 ),
             )
@@ -492,19 +576,21 @@ def register_signal_track(
                     lookup_params.append(user_id)
                 existing = fetchone(
                     conn,
-                    f"""SELECT track_id FROM signal_tracks
+                    f"""SELECT * FROM signal_tracks
                         WHERE {' AND '.join(lookup_clauses)}""",
                     lookup_params,
                 )
                 track_id = int(existing["track_id"]) if existing else None
+                if existing:
+                    _merge_detected_mode(conn, existing, risk_mode)
         else:
             try:
                 track_id = insert_returning_id(
                     conn,
                     """INSERT INTO signal_tracks
                        (user_id, scan_result_id, scan_id, ticker, name, signal_date,
-                        entry_price, preset_matched, risk_mode, registered_at, status)
-                       VALUES (?,?,?,?,?,?,?,?,?,?, 'tracking')""",
+                        entry_price, preset_matched, risk_mode, detected_modes, registered_at, status)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?, 'tracking')""",
                     (
                         user_id,
                         scan_result_id,
@@ -515,6 +601,7 @@ def register_signal_track(
                         entry_price,
                         preset_matched,
                         risk_mode,
+                        detected_modes_value,
                         now,
                     ),
                     pk="track_id",
@@ -531,11 +618,13 @@ def register_signal_track(
                     lookup_params.append(user_id)
                 existing = fetchone(
                     conn,
-                    f"""SELECT track_id FROM signal_tracks
+                    f"""SELECT * FROM signal_tracks
                         WHERE {' AND '.join(lookup_clauses)}""",
                     lookup_params,
                 )
                 track_id = int(existing["track_id"]) if existing else None
+                if existing:
+                    _merge_detected_mode(conn, existing, risk_mode)
 
         if track_id is None:
             return None
@@ -626,6 +715,107 @@ def cleanup_duplicate_signal_tracks() -> Dict[str, int]:
         "deleted_tracks": deleted_tracks,
         "deleted_outcomes": deleted_outcomes,
         "normalized_tickers": normalized_tickers,
+    }
+
+
+def merge_cross_mode_signal_tracks(dry_run: bool = False) -> Dict[str, int]:
+    """同一ユーザー・同一銘柄・同日の追跡を、モード横断で1件に統合する（案1の既存データ移行用）。
+
+    残すレコードは cleanup_duplicate_signal_tracks と同じ優先度
+    （評価済み件数 → 登録日時 → track_id）で決め、全メンバーの検出モードを
+    detected_modes に統合する。削除側の outcomes は従来の cleanup と同様に削除し、
+    残すレコードの outcomes は _ensure_track_outcomes で補完する
+    （pending のものは次回評価で再計算される）。
+    起動時には自動実行しない。scripts/merge_cross_mode_tracks.py から手動で実行すること。
+    """
+    merged_groups = 0
+    deleted_tracks = 0
+    deleted_outcomes = 0
+
+    with connect() as conn:
+        rows = fetchall(conn, "SELECT * FROM signal_tracks ORDER BY track_id ASC")
+        complete_rows = fetchall(
+            conn,
+            """SELECT track_id, COUNT(*) AS cnt
+               FROM signal_track_outcomes
+               WHERE status='complete'
+               GROUP BY track_id""",
+        )
+        complete_counts = {int(r["track_id"]): int(r["cnt"]) for r in complete_rows}
+
+        groups: Dict[tuple[str, str, str], List[Dict[str, Any]]] = {}
+        for row in rows:
+            key = tracking_ticker_key(row.get("ticker")) or str(row.get("ticker") or "").upper()
+            identity = (
+                str(row.get("user_id") or ""),
+                key,
+                _signal_date_key(row.get("signal_date")),
+            )
+            groups.setdefault(identity, []).append(row)
+
+        for identity, members in groups.items():
+            if len(members) < 2:
+                continue
+            merged_groups += 1
+            keep = max(members, key=lambda member: _track_keep_score(member, complete_counts))
+            keep_id = int(keep["track_id"])
+
+            all_modes: List[str] = []
+            for member in members:
+                for mode in track_detected_modes(member):
+                    if mode not in all_modes:
+                        all_modes.append(mode)
+            formatted_modes = _format_detected_modes(all_modes)
+
+            if not dry_run:
+                if formatted_modes != (keep.get("detected_modes") or None):
+                    execute(
+                        conn,
+                        "UPDATE signal_tracks SET detected_modes=? WHERE track_id=?",
+                        (formatted_modes, keep_id),
+                    )
+                if not _risk_mode_key(keep.get("risk_mode")) and all_modes:
+                    execute(
+                        conn,
+                        "UPDATE signal_tracks SET risk_mode=? WHERE track_id=?",
+                        (all_modes[0], keep_id),
+                    )
+
+            for row in members:
+                track_id = int(row["track_id"])
+                if track_id == keep_id:
+                    continue
+                cnt_row = fetchone(
+                    conn,
+                    "SELECT COUNT(*) AS cnt FROM signal_track_outcomes WHERE track_id=?",
+                    (track_id,),
+                )
+                deleted_outcomes += int(cnt_row["cnt"]) if cnt_row else 0
+                if not dry_run:
+                    execute(
+                        conn,
+                        "DELETE FROM signal_track_outcomes WHERE track_id=?",
+                        (track_id,),
+                    )
+                    execute(conn, "DELETE FROM signal_tracks WHERE track_id=?", (track_id,))
+                deleted_tracks += 1
+                logger.info(
+                    "モード横断の重複追跡を統合: track_id=%s ticker=%s signal_date=%s risk_mode=%s keep=%s dry_run=%s",
+                    track_id,
+                    row.get("ticker"),
+                    identity[2],
+                    row.get("risk_mode"),
+                    keep_id,
+                    dry_run,
+                )
+
+            if not dry_run:
+                _ensure_track_outcomes(conn, keep_id)
+
+    return {
+        "merged_groups": merged_groups,
+        "deleted_tracks": deleted_tracks,
+        "deleted_outcomes": deleted_outcomes,
     }
 
 
@@ -738,8 +928,9 @@ def list_signal_tracks(
         clauses.append("status = ?")
         params.append(status)
     if risk_mode:
-        clauses.append("risk_mode = ?")
-        params.append(risk_mode)
+        # 案1: 「そのモードで検出された」トラックに一致させる（detected_modes 含有を含む）
+        clauses.append(_detected_mode_filter_sql())
+        params.extend(_detected_mode_params(risk_mode))
     _append_user_filter(clauses, params, user_id)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(limit)
@@ -864,8 +1055,9 @@ def _track_filters_sql(
     clauses: List[str] = []
     params: List[Any] = []
     if risk_mode:
-        clauses.append("t.risk_mode = ?")
-        params.append(risk_mode)
+        # 案1: 「そのモードで検出された」トラックに一致させる（detected_modes 含有を含む）
+        clauses.append(_detected_mode_filter_sql("t."))
+        params.extend(_detected_mode_params(risk_mode))
     if preset_matched:
         clauses.append("t.preset_matched = ?")
         params.append(preset_matched)
@@ -886,7 +1078,7 @@ def list_track_outcomes(
     with connect() as conn:
         rows = fetchall(
             conn,
-            f"""SELECT o.*, t.ticker, t.name, t.signal_date, t.risk_mode, t.preset_matched
+            f"""SELECT o.*, t.ticker, t.name, t.signal_date, t.risk_mode, t.detected_modes, t.preset_matched
                 FROM signal_track_outcomes o
                 JOIN signal_tracks t ON t.track_id = o.track_id
                 {where}

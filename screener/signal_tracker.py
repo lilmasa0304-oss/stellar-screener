@@ -494,6 +494,7 @@ def _track_to_dashboard_row(track: Dict[str, Any]) -> Dict[str, Any]:
         "name": track.get("name") or track["ticker"],
         "signal_date": str(track.get("signal_date") or "")[:10],
         "risk_mode": track.get("risk_mode"),
+        "detected_modes": storage.track_detected_modes(track),
         "entry_price": _safe_num(track.get("entry_price"), digits=None),
         "status": status,
         "elapsed_business_days": elapsed,
@@ -510,20 +511,42 @@ def _track_to_dashboard_row(track: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _row_detected_modes(track: Dict[str, Any]) -> List[str]:
+    """行の検出モード一覧（detected_modes が無い行は risk_mode で代替）。"""
+    modes = track.get("detected_modes")
+    if modes:
+        return list(modes)
+    return [track["risk_mode"]] if track.get("risk_mode") else []
+
+
+def _order_modes(modes: List[str]) -> List[str]:
+    ordered = [m for m in RISK_MODES if m in modes]
+    ordered.extend(m for m in modes if m not in RISK_MODES)
+    return ordered
+
+
 def _dedupe_dashboard_tracks(tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """同一銘柄・同日・同モードの表示重複を除外する（新しい行を残す）。"""
-    seen = set()
+    """同一銘柄・同日の表示重複を除外する（案1: モード横断で1行にまとめ、検出モードは統合する）。"""
+    seen: Dict[tuple, Dict[str, Any]] = {}
     unique: List[Dict[str, Any]] = []
     for track in tracks:
         identity = (
             tracking_ticker_key(track.get("ticker")) or str(track.get("ticker") or "").upper(),
             str(track.get("signal_date") or "")[:10],
-            track.get("risk_mode") or "",
         )
-        if identity in seen:
+        kept = seen.get(identity)
+        if kept is None:
+            track["detected_modes"] = _order_modes(_row_detected_modes(track))
+            seen[identity] = track
+            unique.append(track)
             continue
-        seen.add(identity)
-        unique.append(track)
+        merged = _row_detected_modes(kept)
+        for mode in _row_detected_modes(track):
+            if mode not in merged:
+                merged.append(mode)
+        kept["detected_modes"] = _order_modes(merged)
+        if not kept.get("risk_mode") and track.get("risk_mode"):
+            kept["risk_mode"] = track.get("risk_mode")
     return unique
 
 
