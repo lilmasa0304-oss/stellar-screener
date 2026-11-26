@@ -1400,6 +1400,7 @@
                         <span class="font-bold text-slate-100 mono-font text-base">${escapeHtml(code)}</span>
                         <span class="text-xs px-2.5 py-1 rounded border font-bold ${signalBadgeClass(preset)}">${escapeHtml(label)}</span>
                         ${alreadyRegistered ? '<span class="text-[10px] font-bold text-amber-400 bg-amber-950/50 border border-amber-800/40 px-2 py-0.5 rounded">検証リスト登録済</span>' : ''}
+                        ${Array.isArray(hit.detected_modes) && hit.detected_modes.length > 1 ? `<span class="text-[10px] font-bold text-sky-300 bg-sky-950/50 border border-sky-800/40 px-2 py-0.5 rounded">${escapeHtml(hit.detected_modes.join('・'))}で検出</span>` : ''}
                         ${autoVerify && !alreadyRegistered ? '<span class="text-[10px] font-bold text-pink-400 bg-pink-950/40 border border-pink-800/40 px-2 py-0.5 rounded">自動登録失敗</span>' : ''}
                     </div>
                     <div class="text-sm font-semibold text-slate-100 leading-snug">${escapeHtml(displayName)}</div>
@@ -1484,7 +1485,9 @@
                     empty.className = 'text-sm text-slate-500 text-center py-8 leading-relaxed';
                     empty.textContent = fetchFailed
                         ? '株価を取得できなかったため、このモードは判定できていません。'
-                        : 'このモードの BUY SIGNAL はありません。';
+                        : (Number(block.moved_to_stricter_count || 0) > 0
+                            ? 'このモードで検出した銘柄は、上位モードの列にまとめて表示しています。'
+                            : 'このモードの BUY SIGNAL はありません。');
                     list.appendChild(empty);
                 } else {
                     hits.forEach((hit) => {

@@ -550,6 +550,43 @@ def _dedupe_dashboard_tracks(tracks: List[Dict[str, Any]]) -> List[Dict[str, Any
     return unique
 
 
+def dedupe_scan_hits_for_display(
+    rows_by_mode: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, int]:
+    """スキャン結果の表示用に、同一銘柄を最も厳しいモードの列へ寄せる。
+
+    検出・保存・検証リスト登録はモード別のまま変えず、表示だけを
+    検証リスト（案1）と同じ「1銘柄1表示」にそろえる。残った行には
+    detected_modes（検出された全モード、厳しい順）を付ける。
+    rows_by_mode はインプレースで書き換え、上位モードへ寄せた件数を
+    モード別に返す。
+    """
+    detected: Dict[str, List[str]] = {}
+    for mode in _order_modes(list(rows_by_mode.keys())):
+        for row in rows_by_mode.get(mode) or []:
+            ticker = row.get("ticker")
+            if not ticker:
+                continue
+            modes = detected.setdefault(str(ticker), [])
+            if mode not in modes:
+                modes.append(mode)
+    moved: Dict[str, int] = {}
+    for mode, rows in list(rows_by_mode.items()):
+        kept: List[Dict[str, Any]] = []
+        moved_count = 0
+        for row in rows or []:
+            modes = detected.get(str(row.get("ticker") or ""))
+            if modes and modes[0] != mode:
+                moved_count += 1
+                continue
+            if modes:
+                row["detected_modes"] = list(modes)
+            kept.append(row)
+        rows_by_mode[mode] = kept
+        moved[mode] = moved_count
+    return moved
+
+
 def build_forward_test_dashboard(
     *,
     auto_evaluate: bool = True,

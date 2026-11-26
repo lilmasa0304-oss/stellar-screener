@@ -63,6 +63,7 @@ from screener.auth import (
 from screener.signal_tracker import (
     build_forward_test_dashboard,
     build_tracking_summary,
+    dedupe_scan_hits_for_display,
     evaluate_pending_tracks,
     register_manual_track,
     register_track_from_scan,
@@ -836,6 +837,18 @@ async def _execute_jpx400_realtime_scan(
             "auto_register_errors": auto_register_errors,
         }
 
+    # 表示の重複排除（案1の表示版）: 同一銘柄は最も厳しいモードの列にだけ出す。
+    # 検出・保存・登録はモード別のまま。完了メッセージの件数も表示に合わせる。
+    display_rows = {mode: results_by_mode[mode]["buy_signals"] for mode in target_modes}
+    moved_counts = dedupe_scan_hits_for_display(display_rows)
+    flat_signals = []
+    for mode in target_modes:
+        block = results_by_mode[mode]
+        block["buy_signals"] = display_rows[mode]
+        block["buy_count"] = len(display_rows[mode])
+        block["moved_to_stricter_count"] = moved_counts.get(mode, 0)
+        flat_signals.extend(display_rows[mode])
+
     # 案1: 同一銘柄が複数モードで検出されても登録は1件に統合されるため、
     # 登録件数はユニークな track_id 数で数える。
     registered_total = len(registered_track_ids)
@@ -1104,6 +1117,13 @@ def get_scan_group(
                 "buy_count": len(hits),
                 "buy_signals": _decorate_buy_signal_rows(hits),
             }
+        # 表示の重複排除（案1の表示版）: 履歴表示でも同一銘柄は1表示にする。
+        display_rows = {mode: block["buy_signals"] for mode, block in results_by_mode.items()}
+        moved_counts = dedupe_scan_hits_for_display(display_rows)
+        for mode, block in results_by_mode.items():
+            block["buy_signals"] = display_rows[mode]
+            block["buy_count"] = len(display_rows[mode])
+            block["moved_to_stricter_count"] = moved_counts.get(mode, 0)
         return {
             "scan_group_id": scan_group_id,
             "modes": [mode for mode in RISK_MODES if mode in results_by_mode],
