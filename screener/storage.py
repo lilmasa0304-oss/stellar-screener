@@ -501,12 +501,14 @@ def register_signal_track(
     now = datetime.utcnow().isoformat()
     detected_modes_value = _format_detected_modes([risk_mode]) if risk_mode else None
     with connect() as conn:
+        # 共有モード（2026-11-27）: 重複判定はユーザーを横断する。
+        # 呼び出し元の user_id は新規行の所有者としてだけ使う。
         existing = find_existing_signal_track(
             conn,
             ticker=ticker,
             signal_date=signal_date,
             risk_mode=risk_mode,
-            user_id=user_id,
+            user_id=None,
         )
         if existing:
             track_id = int(existing["track_id"])
@@ -541,12 +543,14 @@ def register_signal_track(
                        RETURNING track_id
                 """
             else:
+                # user_id が NULL の行は部分ユニークインデックスの対象外で、
+                # (scan_id, ticker, signal_date) の制約は移行で削除済みのため
+                # ON CONFLICT は指定できない。重複は上の横断チェックで防ぐ。
                 insert_sql = """
                     INSERT INTO signal_tracks
                        (user_id, scan_result_id, scan_id, ticker, name, signal_date,
                         entry_price, preset_matched, risk_mode, detected_modes, registered_at, status)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?, 'tracking')
-                       ON CONFLICT (scan_id, ticker, signal_date) DO NOTHING
                        RETURNING track_id
                 """
             row = fetchone(
@@ -571,9 +575,6 @@ def register_signal_track(
             else:
                 lookup_clauses = ["scan_id=?", "ticker=?", "signal_date=?"]
                 lookup_params: List[Any] = [scan_id, ticker, signal_date]
-                if user_id:
-                    lookup_clauses.append("user_id=?")
-                    lookup_params.append(user_id)
                 existing = fetchone(
                     conn,
                     f"""SELECT * FROM signal_tracks
@@ -613,9 +614,6 @@ def register_signal_track(
                     raise
                 lookup_clauses = ["scan_id=?", "ticker=?", "signal_date=?"]
                 lookup_params = [scan_id, ticker, signal_date]
-                if user_id:
-                    lookup_clauses.append("user_id=?")
-                    lookup_params.append(user_id)
                 existing = fetchone(
                     conn,
                     f"""SELECT * FROM signal_tracks
