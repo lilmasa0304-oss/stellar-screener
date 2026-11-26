@@ -73,6 +73,14 @@ from screener.database import get_db_init_error
 from screener.scheduler import start_scheduler, stop_scheduler, get_next_run_time
 from screener.strategy import StrategyEvaluator
 
+# 共有モード（2026-11-27）: 利用者が家族のみのため、スキャン・履歴・検証リストは
+# ユーザー別に分けず全員で共有する。読み取りは user_id=None（storage 層では
+# フィルタなし）、新規書き込みの user_id は SHARED_USER_ID に統一する。
+# 重複判定もユーザー横断（storage.register_signal_track 側で対応）。
+# マルチユーザー運用に戻す場合は、各エンドポイントで require_user_id(user) を
+# 使うよう戻すこと。
+SHARED_USER_ID = "shared"
+
 # ── ロギング設定 ───────────────────────────────────────────────────────────
 def _configure_stdout_utf8() -> None:
     """Windows ターミナル等で日本語ログが化けないよう stdout/stderr を UTF-8 に統一する。"""
@@ -947,7 +955,7 @@ async def start_jpx400_scan(
         target_modes,
         verify_flag,
     )
-    user_id = require_user_id(user)
+    user_id = SHARED_USER_ID
     try:
         async with _scan_lock:
             return _json_safe(await _execute_jpx400_realtime_scan(
@@ -999,13 +1007,13 @@ def _market_scan_status_payload(user_id: Optional[str]) -> Dict[str, Any]:
 @app.get("/api/jpx400/status")
 def get_jpx400_status(user: AuthUser = Depends(get_current_user)):
     """直近の JPX400 スキャン結果（インメモリキャッシュ）を返す。"""
-    return _market_scan_status_payload(require_user_id(user))
+    return _market_scan_status_payload(None)
 
 
 @app.get("/api/market/status")
 def get_market_scan_status(user: AuthUser = Depends(get_current_user)):
     """直近の JPX400 スキャン結果を返す（後方互換エンドポイント）。"""
-    return _market_scan_status_payload(require_user_id(user))
+    return _market_scan_status_payload(None)
 
 
 # ── 認証 API ─────────────────────────────────────────────────────────────
@@ -1033,7 +1041,7 @@ def get_scan_history(
     user: AuthUser = Depends(get_current_user),
 ):
     """過去のスキャンセッション一覧を返す。"""
-    user_id = require_user_id(user)
+    user_id = None
     try:
         return storage.list_sessions(limit=limit, user_id=user_id)
     except Exception as e:
@@ -1047,7 +1055,7 @@ def get_buy_signal_history(
     user: AuthUser = Depends(get_current_user),
 ):
     """過去のスキャンで BUY SIGNAL が出た銘柄を新しい順に返す。risk_mode でモード別に絞れる。"""
-    user_id = require_user_id(user)
+    user_id = None
     try:
         return storage.get_history_buy_signals(
             limit=limit,
@@ -1066,7 +1074,7 @@ def get_scan_results(
     user: AuthUser = Depends(get_current_user),
 ):
     """特定スキャンの全銘柄結果を返す。risk_mode 指定時はそのモードのヒットだけ返す。"""
-    user_id = require_user_id(user)
+    user_id = None
     safe_mode = risk_mode if risk_mode in RISK_MODES else None
     try:
         session = storage.get_session(scan_id, user_id=user_id)
@@ -1096,7 +1104,7 @@ def get_scan_group(
     user: AuthUser = Depends(get_current_user),
 ):
     """同時スキャン1回分を、モード別のヒット一覧として返す。"""
-    user_id = require_user_id(user)
+    user_id = None
     try:
         sessions = storage.list_sessions_by_group(scan_group_id, user_id=user_id)
         if not sessions:
@@ -1142,7 +1150,7 @@ def get_tracking_dashboard(
     user: AuthUser = Depends(get_current_user),
 ):
     """フォワードテスト追跡ダッシュボード（モード別比較・銘柄一覧）。"""
-    user_id = require_user_id(user)
+    user_id = None
     try:
         return _json_safe(
             build_forward_test_dashboard(auto_evaluate=auto_evaluate, user_id=user_id)
@@ -1158,7 +1166,7 @@ def register_tracking(
     user: AuthUser = Depends(get_current_user),
 ):
     """スキャン結果から手動で検証リストへ登録する。"""
-    user_id = require_user_id(user)
+    user_id = SHARED_USER_ID
     safe_mode = payload.risk_mode if payload.risk_mode in RISK_MODES else "堅実"
     ticker = canonicalize_yahoo_ticker(payload.ticker)
     if not ticker:
@@ -1190,7 +1198,7 @@ def get_tracking_summary(
     user: AuthUser = Depends(get_current_user),
 ):
     """3/5/10営業日目の勝率・平均損益率・最高益達成率を比較集計する。"""
-    user_id = require_user_id(user)
+    user_id = None
     try:
         return _json_safe(
             build_tracking_summary(
@@ -1223,7 +1231,7 @@ def evaluate_tracking(
     _verify_cron_secret(x_cron_secret)
     expected = os.getenv("CRON_SECRET", "").strip()
     is_cron = bool(expected and x_cron_secret == expected)
-    user_id = None if is_cron else require_user_id(user)
+    user_id = None
     try:
         result = evaluate_pending_tracks(limit=limit, user_id=user_id)
         return {"status": "success", **result}
